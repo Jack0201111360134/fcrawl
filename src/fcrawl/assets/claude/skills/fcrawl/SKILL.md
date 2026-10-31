@@ -25,8 +25,8 @@ description: How to do ANY web task on this machine — web search, reading a pa
 `search` is Serper-backed (Google). Default for any lookup.
 
 ```bash
-fcrawl search "query"                             # default
-fcrawl search "query" -l 30                       # more results
+fcrawl search "query"                             # default: ~10 results (one Google page)
+fcrawl search "query" -l 20                       # more: each extra page costs time + 1 credit
 fcrawl search "query" -L zh-TW                    # locale
 fcrawl search "query" --location "Taipei, Taiwan" # location bias
 fcrawl search "site:github.com web scraping"      # domain targeting

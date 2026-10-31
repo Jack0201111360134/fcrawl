@@ -579,7 +579,7 @@ def test_r2_old_cache_rows_get_goto_marker(monkeypatch, tmp_path):
     write_cache("search", key, {"results": [{"title": "T", "url": GOTO + "old", "description": "d", "position": 1}],
                                 "elapsed": 0.1, "engine": "serper", "gl": "us", "hl": "en", "pages": 1, "location": None,
                                 "extras": {}, "goto_expires_at": "2099-01-01T00:00:00+00:00"})
-    out = CliRunner().invoke(cli, ["search", "oldq", "--no-pretty"])
+    out = CliRunner().invoke(cli, ["search", "oldq", "-l", "20", "--no-pretty"])
     assert out.exit_code == 0, out.output
     assert "[goto #1]" in out.output and f"fcrawl scrape {GOTO}old" in out.output
 
@@ -1229,7 +1229,7 @@ def test_sr2r2_listing_expiry_rules(monkeypatch, tmp_path):
     write_cache("search", key, {"results": [{"title": "T", "url": GOTO + "old", "description": "d", "position": 1}],
                                 "elapsed": 0.1, "engine": "serper", "gl": "us", "hl": "en", "pages": 1, "location": None, "extras": {}})
     monkeypatch.setattr(s.requests, "post", lambda *a, **k: (_ for _ in ()).throw(s.requests.ConnectionError("no gw")))
-    out = CliRunner().invoke(cli, ["search", "oldq2", "--no-pretty"])
+    out = CliRunner().invoke(cli, ["search", "oldq2", "-l", "20", "--no-pretty"])
     assert "Using cached result" not in out.output and out.exit_code != 0
     # helper contracts
     assert s.page_goto_expiry({"gwGotoExpiresAt": "2030-01-01T00:00:00+00:00"}) == "2030-01-01T00:00:00+00:00"

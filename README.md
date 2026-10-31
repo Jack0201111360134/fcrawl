@@ -132,7 +132,7 @@ fcrawl search <query> [options]
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `--limit` | `-l` | Max results (default: 20) |
+| `--limit` | `-l` | Max results (default: 10 — about one Google page; more fetches extra pages, 1 credit each) |
 | `--locale` | `-L` | Locale code, e.g. `zh-TW`, `ja-JP`, `en-GB` |
 | `--location` | | Geographic bias, e.g. `"Taipei, Taiwan"` |
 | `--output` | `-o` | Save to file |

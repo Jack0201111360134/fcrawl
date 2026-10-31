@@ -457,8 +457,10 @@ def resolve_results(results: list[dict], wait: bool = False) -> int:
     "--limit",
     "-l",
     type=int,
-    default=20,
-    help="Maximum number of results (default: 20)",
+    # Google's first page holds ~10 organic results whatever `num` asks for; 20 meant a
+    # second (and third) sequential page: 2-3x the time and credits for weaker results
+    default=10,
+    help="Maximum number of results (default: 10; more means extra pages, 1 credit each)",
 )
 @click.option(
     "--locale",
