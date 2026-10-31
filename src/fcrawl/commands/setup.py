@@ -24,6 +24,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from importlib import resources
 from pathlib import Path
 from typing import Any, Optional
@@ -106,37 +107,50 @@ def gate_command(gate_path: Path, python: str) -> str:
 
 
 def _normalise_script(word: str) -> str:
-    """A script path as Git Bash would hand it to Python, normalised for comparison:
-    quotes stripped, backslashes as slashes, case-insensitive on Windows."""
-    w = word.strip().strip("'\"")
-    w = w.replace("\\", "/")
+    """A script path normalised for comparison: backslashes as slashes, case-insensitive
+    on Windows."""
+    w = word.strip().replace("\\", "/")
     return w.lower() if sys.platform == "win32" else w
 
 
-def hook_script(hook: Any) -> str | None:
-    """The script a command hook runs: last word of `<python> <script>` (quotes removed,
-    slashes normalised), or None. Understands the three forms setup has ever written:
-    `py -3 C:/x/fcrawl_gate.py` (current), `py -3 'C:\\x\\fcrawl_gate.py'` and the bare
-    backslash form `py -3 C:\\x\\fcrawl_gate.py` (both legacy; the bare one is what Git
-    Bash mangled), so a re-run replaces them instead of leaving stale entries."""
+def hook_scripts(hook: Any) -> list[str]:
+    """Candidate script paths a command hook runs (normalised), or []. The command is read
+    the way Git Bash reads it (POSIX quoting: that is what Claude Code runs hooks
+    through), which handles the current form `py -3 C:/x/fcrawl_gate.py`, the quoted
+    forms and paths with spaces or apostrophes. A second, raw reading (posix=False,
+    outer quotes stripped) covers the legacy bare-backslash form `py -3 C:\\x\\gate.py`
+    that Git Bash mangled, so a re-run replaces it instead of leaving a stale entry."""
     if not isinstance(hook, dict) or hook.get("type") != "command" or not isinstance(hook.get("command"), str):
-        return None
+        return []
     cmd = hook["command"].strip()
     if not cmd:
-        return None
+        return []
+    out: list[str] = []
     try:
-        # posix=False keeps backslashes (a legacy unquoted Windows path would otherwise
-        # be eaten exactly as Git Bash eats it); quotes are stripped by _normalise_script
-        words = shlex.split(cmd, posix=False)
+        words = shlex.split(cmd)
+        if words:
+            out.append(_normalise_script(words[-1]))
     except ValueError:
-        return None
-    return _normalise_script(words[-1]) if words else None
+        pass
+    try:
+        words = shlex.split(cmd, posix=False)
+        if words:
+            out.append(_normalise_script(words[-1].strip("'\"")))
+    except ValueError:
+        pass
+    return out
+
+
+def hook_script(hook: Any) -> str | None:
+    """The script a command hook runs as Git Bash would resolve it (normalised), or None."""
+    found = hook_scripts(hook)
+    return found[0] if found else None
 
 
 def is_gate_hook(hook: Any, gate_path: Path) -> bool:
     """Ours = runs exactly the gate file setup installs (another fcrawl_gate.py elsewhere
     on the machine is somebody else's), in any of the forms setup has written."""
-    return hook_script(hook) == _normalise_script(str(gate_path))
+    return _normalise_script(str(gate_path)) in hook_scripts(hook)
 
 
 class Plan:
@@ -387,28 +401,34 @@ DOCTOR_PAYLOAD = {"hook_event_name": "PreToolUse", "tool_name": "WebSearch", "to
 
 
 def shell_for_hooks() -> list[str] | None:
-    """The shell Claude Code runs hook commands in: sh/bash on Unix, Git Bash on Windows.
-    None when no bash can be found (then the doctor falls back to PowerShell)."""
+    """The shell Claude Code runs hook commands in: bash (sh) on Unix, Git Bash on
+    Windows. None when no bash can be found on Windows: then the command cannot be
+    verified the way it will actually run (PowerShell quoting differs), and the doctor
+    says so instead of guessing."""
     if sys.platform != "win32":
-        return ["/bin/sh", "-c"]
-    for candidate in (shutil.which("bash"), r"C:\Program Files\Git\bin\bash.exe",
-                      r"C:\Program Files\Git\usr\bin\bash.exe"):
+        return [shutil.which("bash") or "/bin/sh", "-c"]
+    candidates = [shutil.which("bash")]
+    for root in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"), os.environ.get("LOCALAPPDATA")):
+        if root:
+            candidates += [str(Path(root) / "Git" / "bin" / "bash.exe"),
+                           str(Path(root) / "Programs" / "Git" / "bin" / "bash.exe")]
+    for candidate in candidates:
         if candidate and Path(candidate).exists():
             return [candidate, "-c"]
     return None
 
 
-def run_hook_command(command: str, payload: dict) -> tuple[int, str, str, str]:
+def run_hook_command(command: str, payload: dict, env: dict | None = None) -> tuple[int, str, str, str]:
     """Run the exact command string from settings.json the way Claude Code does (through
-    the shell), feeding `payload` on stdin. Returns (exit code, stdout, stderr, how)."""
+    the hook shell), feeding `payload` on stdin. Returns (exit code, stdout, stderr, how).
+    Exit 126 with how="no bash" when there is no shell to run it through."""
     data = json.dumps(payload).encode("utf-8")
     shell = shell_for_hooks()
-    if shell is not None:
-        argv, how = shell + [command], f"{Path(shell[0]).name} -c"
-    else:
-        argv, how = ["powershell", "-NoProfile", "-Command", command], "powershell -Command"
+    if shell is None:
+        return 126, "", "Git Bash not found (bash on PATH or under Program Files\\Git)", "no bash"
+    argv, how = shell + [command], f"{Path(shell[0]).name} -c"
     try:
-        r = subprocess.run(argv, input=data, capture_output=True, timeout=30)
+        r = subprocess.run(argv, input=data, capture_output=True, timeout=30, env=env)
     except (OSError, subprocess.SubprocessError) as exc:
         return 127, "", str(exc), how
     return r.returncode, r.stdout.decode("utf-8", "replace"), r.stderr.decode("utf-8", "replace"), how
@@ -448,42 +468,62 @@ def run_doctor(base: Path) -> int:
     except (OSError, ValueError) as exc:
         bad(f"{settings_path} unreadable: {exc}")
         settings = {}
-    commands: dict[tuple[str, str], str] = {}
+    entries: list[tuple[str, str, str]] = []  # (event, matcher, command) for every entry of ours
     for ev, groups in (settings.get("hooks") or {}).items():
         for g in groups if isinstance(groups, list) else []:
             if not isinstance(g, dict):
                 continue
             for h in g.get("hooks") or []:
                 if is_gate_hook(h, gate):
-                    commands[(ev, g.get("matcher"))] = h["command"]
+                    entries.append((ev, g.get("matcher"), h["command"]))
     for slot in HOOK_SLOTS:
-        if slot in commands:
-            ok(f"settings: {slot[0]}[{slot[1]}] -> {commands[slot]}")
+        mine = [c for ev, m, c in entries if (ev, m) == slot]
+        if len(mine) == 1:
+            ok(f"settings: {slot[0]}[{slot[1]}] -> {mine[0]}")
+        elif mine:
+            bad(f"settings: {slot[0]}[{slot[1]}] has {len(mine)} gate entries (re-run `fcrawl setup claude-code`)")
         else:
             bad(f"settings: no gate entry for {slot[0]}[{slot[1]}]")
-    stale = [(k, v) for k, v in commands.items() if k not in HOOK_SLOTS]
-    for k, v in stale:
-        bad(f"settings: stale gate entry {k[0]}[{k[1]}] (re-run `fcrawl setup claude-code` to migrate)")
-    if commands:
-        command = next(iter(commands.values()))
-        words = command.split()
+    for ev, m, c in entries:
+        if (ev, m) not in HOOK_SLOTS:
+            bad(f"settings: stale gate entry {ev}[{m}] (re-run `fcrawl setup claude-code` to migrate)")
+    # run every distinct command string exactly as Claude Code would, each one: a broken
+    # entry in one slot (old interpreter, mangled path) must not hide behind a good one
+    distinct = list(dict.fromkeys(c for _, _, c in entries))
+    for command in distinct:
+        try:
+            words = shlex.split(command)
+        except ValueError:
+            words = []
         interp = shutil.which(words[0]) if words else None
         if interp:
             ok(f"interpreter `{words[0]}` -> {interp}")
         else:
-            bad(f"interpreter `{words[0] if words else '?'}` not found on PATH")
-        code, out, err, how = run_hook_command(command, DOCTOR_PAYLOAD)
+            bad(f"interpreter `{words[0] if words else '?'}` not found on PATH (command: {command})")
+        # the probe must leave nothing behind: the hook writes state under
+        # CLAUDE_CONFIG_DIR, so point it at a scratch copy that only holds the skill
+        with tempfile.TemporaryDirectory(prefix="fcrawl-doctor-") as scratch:
+            scratch_skill = Path(scratch) / "skills" / SKILL_NAME / "SKILL.md"
+            scratch_skill.parent.mkdir(parents=True)
+            if skill.exists():
+                shutil.copyfile(skill, scratch_skill)
+            env = {**os.environ, "CLAUDE_CONFIG_DIR": scratch}
+            code, out, err, how = run_hook_command(command, DOCTOR_PAYLOAD, env=env)
         decision = None
         try:
             decision = json.loads(out).get("hookSpecificOutput", {}).get("permissionDecision")
         except (ValueError, AttributeError):
             pass
-        if code == 0 and decision == "deny":
-            ok(f"hook run ({how}): exit 0, WebSearch denied before the skill is loaded (expected)")
+        if how == "no bash":
+            bad(f"hook run: {err}. Claude Code runs hooks through Git Bash; install Git for Windows "
+                f"(or put bash on PATH) so `{command}` can be checked the way it will really run")
+        elif code == 0 and decision == "deny":
+            ok(f"hook run ({how}): `{command}` exit 0, WebSearch denied before the skill is loaded (expected)")
         elif code == 0:
-            bad(f"hook run ({how}): exit 0 but no deny decision (stdout: {out[:120]!r})")
+            bad(f"hook run ({how}): `{command}` exit 0 but no deny decision (stdout: {out[:120]!r})")
         else:
-            bad(f"hook run ({how}): exit {code} — Claude Code would block the tool call. stderr: {err.strip()[:200]!r}")
+            bad(f"hook run ({how}): `{command}` exit {code} — Claude Code would block the tool call. "
+                f"stderr: {err.strip()[:200]!r}")
     if sys.platform == "win32":
         env = os.environ.get("PYTHONUTF8")
         (ok if env == "1" else bad)(f"PYTHONUTF8={env!r} in this process"

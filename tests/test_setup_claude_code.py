@@ -449,3 +449,109 @@ def test_win_pythonutf8_step_is_windows_only(monkeypatch):
     monkeypatch.setattr(su.subprocess, "run", lambda argv, **k: calls.append(argv))
     assert "restart the Claude app" in su.ensure_pythonutf8_windows(dry_run=False)
     assert calls == [["setx", "PYTHONUTF8", "1"]]
+
+
+# --- Windows round, astra findings ------------------------------------------------------
+
+
+def test_winr1_apostrophe_in_config_dir_is_idempotent_and_uninstalls(tmp_path, monkeypatch):
+    """P1: a path with an apostrophe (C:\\Users\\O'Brien) is POSIX-quoted as 'O'\"'\"'Brien';
+    ownership must read it back the way Git Bash does, else re-runs duplicate the hooks
+    and --uninstall leaves them (pointing at a deleted script -> every call blocked)."""
+    d = tmp_path / "O'Brien" / "claude"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(d))
+    assert run().exit_code == 0
+    gate = d / "hooks" / "fcrawl_gate.py"
+    settings = json.loads((d / "settings.json").read_text())
+    assert len(gate_cmds(settings, d)) == 4
+    cmd = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    assert "O'\"'\"'Brien" in cmd  # shlex form; what bash reads back is the real path
+    import subprocess
+    r = subprocess.run(["/bin/sh", "-c", cmd], input=b'{"hook_event_name":"PreToolUse","tool_name":"Read"}', capture_output=True)
+    assert r.returncode == 0, r.stderr
+    out = run()
+    assert "already present" in out.output
+    assert len(gate_cmds(json.loads((d / "settings.json").read_text()), d)) == 4
+    assert run("--uninstall").exit_code == 0
+    assert json.loads((d / "settings.json").read_text())["hooks"] == {}
+    # Windows shape of the same thing
+    from pathlib import PureWindowsPath
+    monkeypatch.setattr(su.sys, "platform", "win32")
+    wgate = PureWindowsPath(r"C:\Users\O'Brien\.claude\hooks\fcrawl_gate.py")
+    wcmd = su.gate_command(wgate, "py -3")
+    assert su.is_gate_hook({"type": "command", "command": wcmd}, wgate)
+    assert su.is_gate_hook({"type": "command", "command": r"py -3 C:\Users\O'Brien\.claude\hooks\fcrawl_gate.py"}, wgate)
+
+
+def test_winr1_doctor_runs_every_command_and_needs_bash(cdir, monkeypatch):
+    """P2: one bad entry among good ones fails the doctor; on Windows without Git Bash the
+    hook run is a FAIL, never a PowerShell-certified pass."""
+    assert run().exit_code == 0
+    settings = json.loads((cdir / "settings.json").read_text())
+    gate = cdir / "hooks" / "fcrawl_gate.py"
+    bash_group = next(g for g in settings["hooks"]["PreToolUse"] if g["matcher"] == "Bash|PowerShell")
+    bash_group["hooks"][0]["command"] = f"/nonexistent/python3 {gate}"
+    (cdir / "settings.json").write_text(json.dumps(settings))
+    out = run("--doctor")
+    assert out.exit_code == 1, out.output
+    assert "nonexistent/python3" in out.output and out.output.count("hook run") == 2
+    # duplicate entries in one slot are a problem too
+    bash_group["hooks"].append(dict(bash_group["hooks"][0]))
+    (cdir / "settings.json").write_text(json.dumps(settings))
+    out = run("--doctor")
+    assert "has 2 gate entries" in out.output
+    # no bash: explicit failure
+    monkeypatch.setattr(su, "shell_for_hooks", lambda: None)
+    assert run().exit_code == 0  # repair first
+    out = run("--doctor")
+    assert out.exit_code == 1 and "Git Bash not found" in out.output and "All good" not in out.output
+
+
+def test_winr1_doctor_leaves_no_state_even_with_trace(cdir):
+    assert run().exit_code == 0
+    (cdir / "state" / "fcrawl-gate").mkdir(parents=True)
+    (cdir / "state" / "fcrawl-gate" / "TRACE").touch()
+    assert run("--doctor").exit_code == 0
+    assert sorted(p.name for p in (cdir / "state" / "fcrawl-gate").iterdir()) == ["TRACE"]
+
+
+def test_winr1_gate_matches_executables_not_mentions(cdir, tmp_path):
+    """P2: a quoted/path-qualified fcrawl.exe is gated; 'fcrawl' inside a string argument
+    is not."""
+    import subprocess
+    assert run().exit_code == 0
+    gate = cdir / "hooks" / "fcrawl_gate.py"
+    env = {**os.environ, "CLAUDE_CONFIG_DIR": str(cdir), "HOME": str(tmp_path)}
+
+    def decision(tool: str, command: str) -> str:
+        payload = json.dumps({"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": {"command": command},
+                              "session_id": "r1", "transcript_path": "/nonexistent"}).encode()
+        r = subprocess.run([su.python_for_hooks(), str(gate)], input=payload, capture_output=True, env=env)
+        assert r.returncode == 0, r.stderr
+        return "deny" if b'"deny"' in r.stdout else "allow"
+
+    assert decision("PowerShell", r'& "C:\Users\jason lin\.local\bin\fcrawl.exe" search x') == "deny"
+    assert decision("PowerShell", "& 'C:/Users/j/.local/bin/fcrawl.exe' scrape u") == "deny"
+    assert decision("Bash", "PYTHONUTF8=1 fcrawl search q") == "deny"
+    assert decision("Bash", "cd /tmp && fcrawl search q --json") == "deny"
+    assert decision("PowerShell", 'Write-Output "please run fcrawl search x"') == "allow"
+    assert decision("Bash", "echo 'fcrawl search'; cat fcrawl.md; grep fcrawl notes.txt") == "allow"
+    assert decision("Bash", "git log fcrawl_gate.py") == "allow"
+
+
+def test_winr1_progress_draws_on_stderr_not_stdout(monkeypatch, capsys):
+    """P2: `fcrawl scrape URL > page.md` with a terminal stderr must not put spinner text
+    into page.md: progress renders on a stderr console whatever `console=` a call passed."""
+    import io
+    from rich.console import Console
+    from fcrawl.utils import output as o
+
+    monkeypatch.setattr(o, "progress_enabled", lambda: True)
+    captured_err = io.StringIO()
+    monkeypatch.setattr(o, "err_console", Console(file=captured_err, force_terminal=True, width=60))
+    stdout_console = Console(file=io.StringIO(), force_terminal=True, width=60)
+    with o.Progress(o.SpinnerColumn(), o.TextColumn("{task.description}"), console=stdout_console) as p:
+        p.add_task("WORKING-MARKER", total=None)
+        p.refresh()
+    assert "WORKING-MARKER" not in stdout_console.file.getvalue()
+    assert "WORKING-MARKER" in captured_err.getvalue()

@@ -41,9 +41,14 @@ STATE_DIR = CLAUDE_DIR / "state" / "fcrawl-gate"
 GATED_TOOLS = {"WebSearch", "WebFetch"}
 SHELL_TOOLS = {"Bash", "PowerShell"}  # Windows Claude Code has a separate PowerShell tool
 TRACE = (STATE_DIR / "TRACE").exists()
-# `fcrawl …`, `& fcrawl …` (PowerShell call operator), `fcrawl.exe …`, `.\fcrawl.exe`,
-# after any shell separator; never `myfcrawl` or `fcrawl-gateway`
-FCRAWL_CMD = re.compile(r"(^|[\s;&|(`{}])(?:\.[\\/])?fcrawl(?:\.exe)?(?=\s|$)")
+# fcrawl invoked as a command: `fcrawl …`, `& fcrawl …` / `& "C:\…\fcrawl.exe" …`
+# (PowerShell call operator), `fcrawl.exe …`, `.\fcrawl.exe`, `/path/to/fcrawl`, in any
+# position where a shell reads a command word (line start, after ; & | ( ` { } && ||).
+# Not inside a quoted string argument ("please run fcrawl x"), not `myfcrawl`, not
+# `fcrawl-gateway`, not a file name argument (`cat fcrawl.md`).
+_CMD_WORD = r"""(?:"[^"\n]*[\\/]fcrawl(?:\.exe)?"|'[^'\n]*[\\/]fcrawl(?:\.exe)?'|(?:[^\s"';&|(`{}]*[\\/])?fcrawl(?:\.exe)?)"""
+_ENV_PREFIX = r"(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"  # `PYTHONUTF8=1 fcrawl …`
+FCRAWL_CMD = re.compile(r"(?:^|[;&|(`{}]|&&|\|\|)\s*(?:&\s*)?" + _ENV_PREFIX + _CMD_WORD + r"(?=\s|$|[;&|)`}])", re.M)
 
 DENY_REASON = (
     "The fcrawl rules are not in your current context (either this agent never "

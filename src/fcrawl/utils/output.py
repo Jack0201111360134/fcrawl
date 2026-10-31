@@ -47,13 +47,19 @@ def progress_enabled() -> bool:
         return False
 
 
+err_console = Console(stderr=True)
+
+
 class Progress(_RichProgress):
-    """rich Progress that is silent when stderr is not a terminal. Every command's
-    spinner goes through this class (same constructor as rich's)."""
+    """rich Progress that is silent when stderr is not a terminal and otherwise draws on
+    STDERR: `fcrawl scrape URL > page.md` must not put spinner frames into page.md.
+    Every command's spinner goes through this class (same constructor as rich's; a
+    `console=` argument is replaced by the stderr console)."""
 
     def __init__(self, *columns, **kwargs):
         if not progress_enabled():
             kwargs["disable"] = True
+        kwargs["console"] = err_console
         super().__init__(*columns, **kwargs)
 
 
