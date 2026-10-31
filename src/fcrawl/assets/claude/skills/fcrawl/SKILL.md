@@ -38,7 +38,8 @@ fcrawl gsearch "query"                            # browser Google fallback
 opaque tickets (it has pulled this back for now; when results are plain URLs nothing below applies).
 A goto result prints as `[goto] https://host › path` (the real site's breadcrumb; title and snippet
 are real) with a `→ fcrawl scrape g:xxxxxx` line under it — `g:xxxxxx` is the gateway's short id for
-that ticket (`--urls-only` prints the id in place of the URL; `--json` has it as `gotoId`). Choose by
+that ticket (`--urls-only` prints the id in place of the URL, one per line; `--json` has it as
+`gotoId`). Choose by
 title, snippet and breadcrumb as usual, then:
 
 - **To read one: `fcrawl scrape g:xxxxxx --save-temp`, directly.** Scrape resolves the ticket itself

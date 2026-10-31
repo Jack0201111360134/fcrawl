@@ -1331,4 +1331,44 @@ def test_debug_shows_adaptive_batch_mode(monkeypatch, tmp_path):
     monkeypatch.setattr(s.requests, "post", lambda *a, **k: R())
     out = CliRunner().invoke(cli, ["search", "q", "--debug", "--no-cache", "--no-pretty"])
     assert out.exit_code == 0, out.output
-    assert "1 (auto-1)" in out.output
+    assert "1 (auto-1)" in out.output and "page 1" in out.output
+    # a Firecrawl answer has no Serper batches row
+    class RF:
+        status_code = 200
+
+        def json(self):
+            return {"credits": 2, "organic": [{"title": "A", "link": "https://a.example/x", "snippet": "s", "position": 1}],
+                    "gw": {"gwEngine": "firecrawl", "gwProvider": "firecrawl", "gwBatches": 1, "gwSerperError": "503 pool_exhausted"}}
+    monkeypatch.setattr(s.requests, "post", lambda *a, **k: RF())
+    out = CliRunner().invoke(cli, ["search", "q2", "--debug", "--no-cache", "--no-pretty"])
+    assert out.exit_code == 0 and "Serper batches" not in out.output
+
+
+def test_r1_urls_only_wins_over_pretty_and_gateway_timeout(monkeypatch, tmp_path):
+    from fcrawl.cli import cli
+    from fcrawl.commands import search as s
+
+    _gw_rc(tmp_path, monkeypatch)
+    seen = {}
+
+    class R:
+        status_code = 200
+
+        def json(self):
+            return {"credits": 1, "organic": [
+                {"title": "A", "link": GOTO + "a", "snippet": "s", "position": 1, "gwGoto": True, "gotoId": "g:7kq2mx"},
+                {"title": "B", "link": "https://b.example/", "snippet": "s", "position": 2}],
+                    "gw": {"gwEngine": "serper", "gwProvider": "serper", "gwGoto": True,
+                           "gwGotoExpiresAt": "2099-01-01T00:00:00+00:00"}}
+
+    def post(url, headers=None, json=None, timeout=None):
+        seen["timeout"] = timeout
+        return R()
+
+    monkeypatch.setattr(s.requests, "post", post)
+    out = CliRunner().invoke(cli, ["search", "q", "--urls-only", "--pretty", "--no-cache"])
+    assert out.exit_code == 0, out.output
+    lines = [l for l in out.output.splitlines() if l and not l.startswith(("Found", "⠋", "fcrawl resolve"))]
+    assert lines[-2:] == ["g:7kq2mx", "https://b.example/"]
+    assert "Search Results" not in out.output and "→ fcrawl scrape" not in out.output
+    assert seen["timeout"] == s.SEARCH_GATEWAY_TIMEOUT == 65

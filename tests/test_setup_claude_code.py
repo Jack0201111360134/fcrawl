@@ -333,7 +333,8 @@ def test_win_doctor_passes_on_a_good_install_and_flags_a_bad_command(cdir):
     assert run().exit_code == 0
     out = run("--doctor")
     assert out.exit_code == 0, out.output
-    assert "WebSearch denied before the skill is loaded" in out.output and "All good" in out.output
+    flat = " ".join(out.output.split())  # Rich wraps long temp paths; compare without line breaks
+    assert "WebSearch denied before the skill is loaded" in flat and "All good" in flat
     assert "Bash|PowerShell" in out.output
     # break the command the way the Windows bug did (a path the shell mangles) -> FAIL
     settings = json.loads((cdir / "settings.json").read_text())

@@ -19,6 +19,7 @@ from ..utils.output import console, handle_output, resolve_pretty
 
 SERPER_ENDPOINT = "https://google.serper.dev/search"
 SERPER_NEWS_ENDPOINT = "https://google.serper.dev/news"
+SEARCH_GATEWAY_TIMEOUT = 65  # /gw/search: two sequential Serper batches (30 s each) fit the gateway's 55 s
 SERPER_MAX_RESULTS_PER_PAGE = 100
 
 
@@ -178,7 +179,9 @@ def _serper_search(
                 endpoint,
                 headers=headers,
                 json=payload,
-                timeout=30,
+                # the gateway may run two Serper batches one after the other (adaptive
+                # escalation) within its own 55 s deadline; direct Serper answers in seconds
+                timeout=SEARCH_GATEWAY_TIMEOUT if is_gateway() else 30,
             )
             requests_made += 1
 
@@ -327,10 +330,11 @@ def _display_debug_info(
     table.add_row("Language (hl)", hl + (" (auto: CJK query)" if auto_locale else ""))
     table.add_row("Location", location or "(none)")
     table.add_row("Time filter (tbs)", tbs or "(none)")
-    if gw and gw.get("gwBatches") is not None:
+    if gw and gw.get("gwBatches") is not None and engine != "firecrawl":
         # adaptive gateway: 1 batch unless goto tickets are around (auto-1 / auto-escalated /
-        # auto-goto-period), or exactly what --single/--batches asked (explicit)
-        table.add_row("Serper batches", f"{gw['gwBatches']} ({gw.get('gwBatchMode', '?')})")
+        # auto-goto-period), or exactly what --single/--batches asked (explicit). The
+        # gateway answers per page; this is page 1's.
+        table.add_row("Serper batches (page 1)", f"{gw['gwBatches']} ({gw.get('gwBatchMode', '?')})")
 
     console.print(table)
 
@@ -666,6 +670,8 @@ def search(
             gw=gw_info,
         )
 
+    if urls_only and not output and not json_output:
+        pretty = False  # a URL/id list is for piping; never the pretty table
     if pretty and not output and not json_output:
         _display_results(results)
 
