@@ -1313,3 +1313,22 @@ def test_sr2r2_firecrawl_answer_stops_pagination(monkeypatch, tmp_path):
     assert out.exit_code == 0, out.output
     assert pages == [1] and out.output.count("https://fc.example/") == 3
     assert "Engine: firecrawl (Serper failed: 503 pool_exhausted)" in out.output
+
+
+def test_debug_shows_adaptive_batch_mode(monkeypatch, tmp_path):
+    from fcrawl.cli import cli
+    from fcrawl.commands import search as s
+
+    _gw_rc(tmp_path, monkeypatch)
+
+    class R:
+        status_code = 200
+
+        def json(self):
+            return {"credits": 1, "organic": [{"title": "A", "link": "https://a.example/x", "snippet": "s", "position": 1}],
+                    "gw": {"gwEngine": "serper", "gwProvider": "serper", "gwBatches": 1, "gwBatchMode": "auto-1"}}
+
+    monkeypatch.setattr(s.requests, "post", lambda *a, **k: R())
+    out = CliRunner().invoke(cli, ["search", "q", "--debug", "--no-cache", "--no-pretty"])
+    assert out.exit_code == 0, out.output
+    assert "1 (auto-1)" in out.output

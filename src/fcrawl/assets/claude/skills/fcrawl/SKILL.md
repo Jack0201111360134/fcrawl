@@ -34,19 +34,22 @@ fcrawl csearch "query"                            # browser multi-engine fallbac
 fcrawl gsearch "query"                            # browser Google fallback
 ```
 
-**`[goto]` results are normal, not broken.** Google wraps results after the top few in opaque
-tickets. They print as `[goto] https://host › path` (the real site's breadcrumb; title and snippet are
-real) with a `ticket: https://www.google.com/goto?url=…` line under them. Choose by title, snippet
-and breadcrumb as usual, then:
+**`[goto]` results are normal, not broken.** Google sometimes wraps results after the top few in
+opaque tickets (it has pulled this back for now; when results are plain URLs nothing below applies).
+A goto result prints as `[goto] https://host › path` (the real site's breadcrumb; title and snippet
+are real) with a `→ fcrawl scrape g:xxxxxx` line under it — `g:xxxxxx` is the gateway's short id for
+that ticket (`--urls-only` prints the id in place of the URL; `--json` has it as `gotoId`). Choose by
+title, snippet and breadcrumb as usual, then:
 
-- To read one: `fcrawl scrape <ticket> --save-temp` — the gateway swaps in the real URL (header line
-  `Resolved: ticket → real`), waiting ~20 s only in rare cases.
-- Need the real URLs first (e.g. to judge the source): `fcrawl search "query" --resolve`, or later
-  `fcrawl resolve <ticket…> --wait`.
-- A `[goto]` line without a breadcrumb (only "10+ comments · 1 year ago") is a social post
-  (FB/IG/Threads/Reddit); `--resolve` tells you which.
-- One search is two merged Google batches by default (slightly more results than before);
-  `--single` makes it one. `goto_unresolved` errors: wait 20 s and retry, or `fcrawl resolve … --wait`.
+- **To read one: `fcrawl scrape g:xxxxxx --save-temp`, directly.** Scrape resolves the ticket itself
+  (header line `Resolved: g:xxxxxx → real URL`), waiting ~20 s only in rare cases. **Never run
+  `fcrawl resolve` first** — it does not speed scrape up, it only spends a redemption.
+- `fcrawl resolve g:xxxxxx…` (or `search … --resolve`) is **only** for when you want the URL without
+  reading the page: the breadcrumb is `› ...`, or there is no breadcrumb (only "10+ comments · 1 year
+  ago" = a social post: FB/IG/Threads/Reddit) and you must judge the source before fetching.
+- Ids live 2 h; `goto_expired` means re-run the search. `goto_unresolved`: wait 20 s and scrape again.
+- Batches: the gateway fires one Google batch and adds a second only while goto is around (more
+  redeemable tickets); `--single` forces one, `--batches 2` forces two. `--debug` shows which happened.
 
 ## Code / docs search (Developer Index)
 

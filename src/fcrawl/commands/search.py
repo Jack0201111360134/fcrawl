@@ -217,7 +217,8 @@ def _serper_search(
                 if data.get("relatedSearches"):
                     extras["relatedSearches"] = data["relatedSearches"]
                 if gw:
-                    extras["gw"] = {k: v for k, v in gw.items() if k in ("gwEngine", "gwSerperError", "gwProvider")}
+                    extras["gw"] = {k: v for k, v in gw.items()
+                                    if k in ("gwEngine", "gwSerperError", "gwProvider", "gwBatches", "gwBatchMode")}
                 if is_gateway() and gw:
                     if engine == "firecrawl" and not modern:
                         return [], time.time() - start, ("this gateway does not support --engine firecrawl yet "
@@ -326,6 +327,10 @@ def _display_debug_info(
     table.add_row("Language (hl)", hl + (" (auto: CJK query)" if auto_locale else ""))
     table.add_row("Location", location or "(none)")
     table.add_row("Time filter (tbs)", tbs or "(none)")
+    if gw and gw.get("gwBatches") is not None:
+        # adaptive gateway: 1 batch unless goto tickets are around (auto-1 / auto-escalated /
+        # auto-goto-period), or exactly what --single/--batches asked (explicit)
+        table.add_row("Serper batches", f"{gw['gwBatches']} ({gw.get('gwBatchMode', '?')})")
 
     console.print(table)
 
