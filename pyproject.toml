@@ -1,18 +1,15 @@
 [project]
 name = "fcrawl"
-version = "0.1.0"
-description = "A powerful CLI tool for Firecrawl - web scraping from your terminal"
+version = "0.2.0"
+description = "Web search, scraping, Reddit, X, YouTube and Dcard from the terminal, built for AI coding agents"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "aiosqlite>=0.22.1",
-    "beautifulsoup4>=4.14.3",
     "camoufox[geoip]>=0.4.11",
     "click>=8.3.1",
     "firecrawl-py",
     "httpx>=0.28.1",
     "idna>=3.4",
-    "orjson>=3.11.5",
     "pyperclip>=1.11.0",
     "python-dotenv>=1.2.1",
     "requests>=2.32.5",

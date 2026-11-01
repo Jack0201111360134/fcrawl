@@ -657,17 +657,14 @@ wheels = [
 
 [[package]]
 name = "fcrawl"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
-    { name = "aiosqlite" },
-    { name = "beautifulsoup4" },
     { name = "camoufox", extra = ["geoip"] },
     { name = "click" },
     { name = "firecrawl-py" },
     { name = "httpx" },
     { name = "idna" },
-    { name = "orjson" },
     { name = "pyperclip" },
     { name = "python-dotenv" },
     { name = "requests" },
@@ -687,8 +684,6 @@ asr = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiosqlite", specifier = ">=0.22.1" },
-    { name = "beautifulsoup4", specifier = ">=4.14.3" },
     { name = "camoufox", extras = ["geoip"], specifier = ">=0.4.11" },
     { name = "click", specifier = ">=8.3.1" },
     { name = "firecrawl-py", git = "https://github.com/Yan-Yu-Lin/firecrawl.git?subdirectory=apps%2Fpython-sdk&rev=3c3212971830bc02dec4b89fe261de1c89c25383" },
@@ -696,7 +691,6 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "idna", specifier = ">=3.4" },
     { name = "opencc", marker = "extra == 'asr'", specifier = ">=1.1.9" },
-    { name = "orjson", specifier = ">=3.11.5" },
     { name = "pydub", marker = "extra == 'asr'", specifier = ">=0.25.1" },
     { name = "pyperclip", specifier = ">=1.11.0" },
     { name = "python-dotenv", specifier = ">=1.2.1" },

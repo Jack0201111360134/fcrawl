@@ -37,7 +37,7 @@ console = Console()
 
 @click.group(invoke_without_command=True)
 @click.pass_context
-@click.version_option(version="0.1.0", prog_name="fcrawl")
+@click.version_option(package_name="fcrawl", prog_name="fcrawl")
 def cli(ctx):
     """
     fcrawl - Firecrawl CLI Tool
