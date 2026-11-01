@@ -30,7 +30,7 @@ MANIFEST
 *.manifest
 *.spec
 
-# Unit test / coverage reports
+# Unit test / coverage reports / tool caches
 htmlcov/
 .tox/
 .nox/
@@ -43,9 +43,10 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+.ruff_cache/
 cover/
 
-# Environments
+# Environments and local config (may hold keys or tokens)
 .env
 .venv
 env/
@@ -53,8 +54,9 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.fcrawlrc
 
-# IDEs
+# IDEs / OS
 .idea/
 .vscode/
 *.swp
@@ -62,22 +64,13 @@ venv.bak/
 *~
 .DS_Store
 
+# Agent tooling
+.claude/worktrees/
+.todos/
+
 # Project specific
 *.log
 output/
-# Stray twscrape DB when fcrawl is run from repo root
-accounts.db
+fcrawl-saved/
+# Stray twscrape account DB when fcrawl is run from the repo root
 *.db
-*.json
-*.md
-!README.md
-!CLAUDE.md
-!AGENT_GUIDE.md
-!docs/*.md
-# shipped package data (fcrawl setup claude-code)
-!src/fcrawl/assets/**
-!docs/**/*.md
-!requirements.txt
-# Test fixtures must be tracked even though *.json is otherwise ignored
-!tests/fixtures/**/*.json
-.todos/
