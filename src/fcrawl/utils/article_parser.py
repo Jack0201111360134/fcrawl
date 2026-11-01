@@ -180,7 +180,7 @@ def draftjs_to_markdown(blocks: list[dict], title: str | None = None) -> str:
             lines.append(f"> {styled_text}")
             lines.append("")
         elif block_type == "code-block":
-            lines.append(f"```")
+            lines.append("```")
             lines.append(styled_text)
             lines.append("```")
             lines.append("")

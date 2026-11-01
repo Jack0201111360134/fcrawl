@@ -1,6 +1,5 @@
 """X/Twitter client utilities for fcrawl"""
 
-import os
 from pathlib import Path
 
 from twscrape import API, AccountsPool

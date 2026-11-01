@@ -2,7 +2,6 @@
 
 import click
 from ..utils.output import Progress, SpinnerColumn, TextColumn
-from rich.console import Console
 from typing import Optional
 
 from ..utils.config import firecrawl_call

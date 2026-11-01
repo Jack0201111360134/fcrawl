@@ -6,10 +6,8 @@ import time
 import click
 import requests
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from ..utils.output import Progress, SpinnerColumn, TextColumn
 from types import SimpleNamespace
-from rich.console import Console
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -621,7 +619,7 @@ def scrape(
         if cached and validate_result(cached)[0]:
             result = CachedResult(cached)
             from_cache = True
-            console.print(f"[dim]Using cached result[/dim]")
+            console.print("[dim]Using cached result[/dim]")
 
     # Handle --cache-only
     if cache_only and not from_cache:

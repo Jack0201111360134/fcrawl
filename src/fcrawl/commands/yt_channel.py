@@ -285,7 +285,7 @@ def yt_channel(
             TextColumn("[progress.description]{task.description}"),
             console=console,
         ) as progress:
-            progress.add_task(f"Fetching channel videos...", total=None)
+            progress.add_task("Fetching channel videos...", total=None)
             result = explorer.get_channel_videos(
                 channel_url,
                 limit=effective_limit,

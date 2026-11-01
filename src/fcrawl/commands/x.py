@@ -16,7 +16,7 @@ from twscrape.models import parse_tweet
 
 from ..utils.article_parser import parse_article_from_response
 from ..utils.config import is_gateway
-from ..utils.output import handle_output, save_to_file
+from ..utils.output import save_to_file
 from ..utils.x_client import get_x_api, get_x_db_path, get_x_pool
 from ._x_diagnose import render_diagnostics, run_diagnostics
 from . import _x_gateway as gateway_backend
@@ -1219,7 +1219,7 @@ def x_accounts_login(username: Optional[str]):
             console.print(f"[red]Error: {e}[/red]")
             raise click.Abort()
 
-    console.print(f"[green]Login complete[/green]")
+    console.print("[green]Login complete[/green]")
     console.print(f"  Total: {result['total']}")
     console.print(f"  Success: {result['success']}")
     console.print(f"  Failed: {result['failed']}")

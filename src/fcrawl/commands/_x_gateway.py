@@ -12,7 +12,7 @@ Every function returns the Tweet / User dataclasses x.py already renders.
 from __future__ import annotations
 
 import re
-from typing import Any, Optional
+from typing import Any
 
 import click
 import requests

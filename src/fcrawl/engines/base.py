@@ -1,7 +1,7 @@
 """Base class for search engines"""
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 import asyncio
 import platform

@@ -1215,7 +1215,7 @@ def test_sr2r2_listing_expiry_rules(monkeypatch, tmp_path):
     be established); (b) a page from an older gateway (gwFetchedAt only) expires 2 h after
     the GATEWAY fetched it, not after we did; (c) a multi-page listing keeps the earliest
     expiry; (d) a cache hit on a modern gateway is accepted under --engine firecrawl."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import timedelta
 
     from fcrawl.cli import cli
     from fcrawl.commands import search as s

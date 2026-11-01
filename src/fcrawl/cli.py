@@ -103,13 +103,6 @@ def config():
         console.print(f"  {key}: {value}")
 
 
-# REMOVED: quick is redundant - just use `fcrawl scrape URL`
-# @cli.command()
-# @click.argument('url')
-# def quick(url):
-#     """Quick scrape with default settings (markdown to stdout)"""
-#     ...
-
 if __name__ == "__main__":
     cli()
 

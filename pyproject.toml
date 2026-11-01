@@ -59,3 +59,10 @@ override-dependencies = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+# pyflakes + syntax errors only; style rules stay off on purpose
+select = ["F", "E9"]

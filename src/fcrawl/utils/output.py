@@ -9,10 +9,9 @@ from typing import Any, Dict, Optional, List
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.progress import Progress as _RichProgress
-from rich.progress import SpinnerColumn, TextColumn
+from rich.progress import SpinnerColumn, TextColumn  # noqa: F401 -- re-exported for commands
 from rich.syntax import Syntax
 from rich.table import Table
-from rich import print as rprint
 import pyperclip
 
 console = Console()
