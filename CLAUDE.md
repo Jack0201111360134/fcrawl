@@ -1,152 +1,63 @@
-# fcrawl CLI
+# fcrawl — notes for agents working on this repo
 
-A command-line interface for Firecrawl, designed for use with a self-hosted Firecrawl instance.
+fcrawl is a Python CLI (Click + Rich, managed with uv) that gives AI coding agents web access: Google search, page scraping, Reddit, X, YouTube, Dcard and the Firecrawl Developer Index. Its main users are Claude Code agents, so output formats are an interface. User-facing docs: `README.md`, `docs/commands.md`, `docs/direct-mode.md`.
 
-## Project Structure
+## Two modes
+
+- **Gateway mode (normal).** `~/.fcrawlrc` has `api_url: https://fcrawl.arthurlin.dev` and a `gateway_token` (`fgw_…`). The private server **fcrawl-gateway** (`~/20-29-Development/21-Active-Projects/fcrawl-gateway`, repo `Yan-Yu-Lin/fcrawl-gateway`) holds every real key and does the Firecrawl key pool, quotas, cache, Serper, X and goto-ticket resolution. The client only sends the token. Arthur, his dad and a friend run this way.
+- **Direct mode.** No token: Firecrawl/Serper/X keys in `.fcrawlrc`, with a local key pool (`utils/keypool.py`). Keep it working, but gateway mode comes first.
+
+## Branch, install, release
+
+- Users install from GitHub, branch **`feat/gateway-mode`**: `uv tool install --force "git+https://github.com/Yan-Yu-Lin/fcrawl.git@feat/gateway-mode"`, then `fcrawl setup claude-code`. Whatever is pushed there reaches Arthur's family on their next upgrade. Work on a side branch, test, then fast-forward.
+- Arthur's Mac uses the same git install (not editable). To try a change for real: push + reinstall, or `uv run fcrawl …` inside the repo.
+- The version lives only in `pyproject.toml` (`fcrawl --version` reads the package metadata).
+
+## Layout
 
 ```
-fcrawl/
-├── fcrawl.py              # Main entry point, CLI group definition
-├── commands/              # Command implementations
-│   ├── scrape.py          # Single URL scraping
-│   ├── crawl.py           # Multi-page website crawling
-│   ├── map.py             # URL discovery/sitemap mapping
-│   ├── extract.py         # AI-powered structured extraction
-│   └── search.py          # Web search with optional scraping
-├── utils/
-│   ├── config.py          # Configuration loading, Firecrawl client creation
-│   └── output.py          # Output handling (display, save, clipboard)
-├── searxng/               # SearXNG config (optional search backend)
-├── requirements.txt       # Python dependencies
-└── install.sh             # Quick install script
+src/fcrawl/
+  cli.py                 registers every command; `config` lives here
+  commands/              one module per command: scrape, search, resolve, map, reddit, x, dcard, dev,
+                         yt_transcript, yt_channel, yt_search, transcribe, cache_cmd, setup
+    _x_gateway.py        X through the gateway (/gw/x/gql); _x_twitterapi.py, _x_diagnose.py other X backends
+  utils/config.py        config loading, is_gateway(), check_gateway_url(), get_firecrawl_client(), firecrawl_call()
+  utils/cache.py         file cache in the temp dir + validate_result() (blocked/empty pages never count as success)
+  utils/keypool.py       direct-mode Firecrawl key pool, shared across processes
+  utils/goto.py          Google goto tickets (g:xxxxxx ids)
+  utils/platform.py      temp dir (/tmp, %TEMP% on Windows), OS differences
+  utils/output.py        output, UTF-8 stdio, Progress (stderr, off when not a TTY)
+  utils/transcriber.py   optional SenseVoice ASR (extra `asr`, lazy import)
+  vendors/twitterapi_io/ twitterapi.io client + mapper
+  assets/claude/         SOURCE OF TRUTH for the Claude Code skill (skills/fcrawl/SKILL.md) and hook
+                         (hooks/fcrawl_gate.py) that `fcrawl setup claude-code` installs
+tests/                   pytest, no network
 ```
 
-## Commands
+Dependencies worth knowing: `firecrawl-py` and `twscrape` are pinned to Arthur's forks in `[tool.uv.sources]`. Change dependencies with `uv add` / `uv remove`, never by hand.
 
-| Command | Purpose |
-|---------|---------|
-| `scrape <url>` | Scrape single URL (markdown, html, links, screenshot, extract) |
-| `crawl <url>` | Crawl website with depth/limit controls |
-| `map <url>` | Discover all URLs on a domain |
-| `extract <urls>` | Extract structured data using AI (requires --prompt/--fields/--schema) |
-| `search <query>` | Fast Google web search via Serper API |
-| `dev <query>` | Code search: GitHub issues, PRs, READMEs, docs (Firecrawl Developer Index) |
-| `csearch <query>` | Multi-engine browser search (Google/Bing/Brave via Camoufox) |
-| `gsearch <query>` | Direct Google browser search via Camoufox |
-| `dcard post <id>…` | Post + comments (v3, `--sort`, `--replies N\|auto\|auto:N`); several IDs with `-o dir/` fetch in parallel; timeouts retry once |
-| `dcard search <query>` | Dcard v3 search: `--forum`, `--sort relevance\|latest\|trending\|interaction`, `--field`, `--since N` days; 30 per credit |
-| `dcard topic <name>` | Posts tagged with a topic (`--hot`); it is search with `field=topics` |
-| `dcard forum <alias>` | Forum post list, latest or `--popular`; 100 per credit; `--info` adds forum stats. Lists share `--compact`, `--min-likes`, `--by-likes` |
-| `dcard forums` | All forums sorted by subscribers (`-s` filter, `--school`); one cached request |
-| `cache stats\|clean\|clear` | Inspect the /tmp/fcrawl-cache store; `clean --yes` trashes junk (challenge pages, 4xx, empty) |
-| `config` | View current configuration (keys masked) |
-
-## Running Commands
+## Tests and lint
 
 ```bash
-# Run via installed entrypoint
-fcrawl <command> [options]
-
-# Or via uv
-uv run fcrawl <command> [options]
-
-# Examples
-fcrawl scrape https://example.com -f markdown
-fcrawl crawl https://example.com --limit 5 --depth 2
-fcrawl map https://example.com --limit 50
-fcrawl search "python tutorials" -l 10
-fcrawl csearch "python tutorials" -l 20
+uv run --with pytest python -m pytest -q     # 133 tests, all offline
+uvx ruff check src tests                     # config in pyproject: pyflakes + syntax only
 ```
 
-## Configuration
+Smoke tests against the live gateway cost real credits (search 1 Serper credit, scrape ~1 Firecrawl credit). Keep them few, and never loop them.
 
-### Defaults (in `utils/config.py`)
+## Rules
 
-```python
-DEFAULT_CONFIG = {
-    'api_url': 'http://localhost:3002',  # Self-hosted Firecrawl
-    'api_key': None,                      # Not required for localhost
-    'api_keys': [],                       # Extra keys, ONE PER FIRECRAWL ACCOUNT (key pool)
-    'rate_limit_per_minute': 10,          # Per-account /scrape budget (Free tier)
-    'max_wait': 75,                       # Seconds to wait when every key is rate limited
-    'jina_fallback': True,                # Jina Reader relay after Firecrawl fails
-    'serper_api_key': None,               # For `search` command (Serper.dev)
-    'default_format': 'markdown',
-    'cache_ttl_days': 7,                  # 0 = cache never expires
-}
-```
+- Never print, log or commit keys or tokens. `fcrawl config` masks them, and tests use fake values.
+- The gateway token goes only over https, or plain http to loopback/LAN/tailnet hosts (`check_gateway_url`). Don't weaken that.
+- A quota error from the gateway is 429 + Retry-After, never 402: in direct mode the client permanently disables a key on 402.
+- Results go to stdout and progress/notes to stderr. `RESULT path=… status=…` lines (scrape `--save-temp`, dcard `-o`) are parsed by agents, so don't change their shape casually.
+- Output must stay UTF-8-safe on Windows (cp950 consoles): `force_utf8_stdio()` runs first in `cli.py`; open files with `encoding="utf-8"`.
+- When you edit the skill or hook, edit `src/fcrawl/assets/claude/...`, then run `fcrawl setup claude-code` to refresh `~/.claude`. Don't edit the installed copy alone.
+- A new gateway endpoint also has to be added to the gateway's nginx whitelist (`deploy/nginx-fcrawl.conf` in the gateway repo), or it returns 404 in production.
+- Use `trash`, not `rm`, for files outside the repo.
 
-### Key pool (`utils/keypool.py`)
+## Known gaps
 
-Firecrawl rate limits are per *team*, so `api_keys` only helps when each key belongs to a
-different account. All fcrawl processes share `/tmp/fcrawl-keys/state.json` (flock'd; stores
-key hashes, not keys): each call picks the key with the fewest requests in the last 60 s, a 429
-puts that key on cooldown for `Retry-After` seconds and the call retries on another key, and when
-every key is cooling down the call sleeps (bounded by `max_wait` / `--max-wait`). 401/402 disable a
-key for the rest of the process lifetime in that state file. `scrape`, `crawl`, `map`, `extract`
-and `dcard` all go through `firecrawl_call()` / `get_key_pool()`; `dev` still uses `api_key` only.
-
-### Scrape relay + validation (`commands/scrape.py`, `utils/cache.py`)
-
-Firecrawl first (429 never escapes the pool). Only if Firecrawl errors, times out, or returns a
-page that fails `validate_result()` (status >= 400, "Just a moment..."-style titles, challenge
-phrases, empty body) does Jina Reader run — in JSON mode so its `httpStatus` is visible. Both
-providers' results must pass `validate_result()` before being printed or cached; otherwise the
-command aborts with `Blocked by the target site` and `--save-temp` prints `RESULT … status=blocked`.
-Cache entries expire after `cache_ttl_days`; junk entries are skipped on read.
-
-### Configuration Sources (priority order)
-
-1. Environment variables (highest priority):
-   - `FIRECRAWL_API_URL`
-   - `FIRECRAWL_API_KEY`
-   - `FIRECRAWL_API_KEYS` (comma-separated, replaces `api_keys`)
-   - `SERPER_API_KEY` (for `search` command)
-   - `FCRAWL_YT_COOKIES_FILE` (for `yt-transcript`, Netscape cookies.txt)
-   - `FCRAWL_YT_COOKIES_FROM_BROWSER` (for `yt-transcript`, e.g. `chrome`)
-
-2. Config file: `.fcrawlrc` (current dir) or `~/.fcrawlrc`
-   ```json
-   {
-     "api_url": "http://localhost:3002",
-     "api_key": "fc-account-one",
-     "api_keys": ["fc-account-one", "fc-account-two"],
-     "serper_api_key": "optional-serper-key",
-     "yt_cookies_file": "optional-netscape-cookies.txt",
-     "yt_cookies_from_browser": "chrome"
-   }
-   ```
-
-3. Default config (lowest priority)
-
-### Localhost Detection
-
-The client auto-uses a dummy API key for localhost instances since self-hosted Firecrawl doesn't require authentication.
-
-## Dependencies
-
-- **click**: CLI framework
-- **rich**: Terminal formatting (tables, progress, markdown)
-- **firecrawl-py**: Official Firecrawl Python SDK
-- **pyperclip**: Clipboard support
-- **python-dotenv**: Environment variable loading
-
-## Development Notes
-
-- Uses Click for command parsing with `@click.group()` pattern
-- Rich provides progress spinners/bars and formatted output
-- TTY detection enables plain output for Unix pipelines (`--no-pretty` or piped output)
-- All commands follow consistent error handling: catch exception, stop progress, print error, abort
-- The `search.py` command is the most complex (multiple sources, optional scraping, time filters)
-- Firecrawl SDK methods used: `scrape()`, `crawl()`, `map()`, `extract()`, `search()`
-
-## Testing
-
-No formal test suite. Manual testing against a running Firecrawl instance:
-
-```bash
-# Ensure Firecrawl is running on localhost:3002
-# Then run commands manually
-python fcrawl.py scrape https://example.com
-python fcrawl.py quick https://example.com
-```
+- `dev` calls Firecrawl Cloud directly (not the gateway): free per-IP tier unless `api_key` is set.
+- `scrape -f extract` is a leftover format option, untested against the gateway.
+- With no `.fcrawlrc`, `api_url` defaults to `http://localhost:3002` (self-hosted Firecrawl), and a newcomer sees "connection refused".
