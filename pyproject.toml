@@ -56,3 +56,6 @@ override-dependencies = [
     "librosa>=0.10.0",
     "llvmlite>=0.43.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
