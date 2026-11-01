@@ -219,8 +219,7 @@ fcrawl x tweets handle
 ## General
 
 - `--no-cache` fresh fetch, `--cache-only` skip API, `--copy` clipboard, `fcrawl <cmd> --help` for flags.
-- `fcrawl extract` is broken — scrape and process yourself.
-- `fcrawl crawl` may miss links — `scrape URL --raw --wait 5000 -f links` first, then scrape each.
+- No crawl command: `scrape URL --raw --wait 5000 -f links` (or `fcrawl map URL`), then scrape each page you need.
 - `fcrawl cache stats | clean --yes | clear <bucket>`.
 
 ## Windows / PowerShell

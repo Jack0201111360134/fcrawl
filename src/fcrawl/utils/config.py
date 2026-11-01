@@ -270,9 +270,8 @@ def get_key_pool(max_wait: Optional[int] = None) -> "KeyPool":
 def firecrawl_call(fn, max_wait: Optional[int] = None):
     """Run fn(client) through the key pool, rotating keys on 429.
 
-    fn must be a single request. Multi-step SDK calls (crawl/extract, which
-    start a job and then poll it) should pool only the job start, see
-    firecrawl_job().
+    fn must be a single request (a job that is started and then polled would
+    need the polling pinned to the key that started it).
 
     Gateway mode skips the pool entirely: the gateway runs the pool and
     answers quota problems with 429 + Retry-After, never 402, so the local
@@ -284,27 +283,3 @@ def firecrawl_call(fn, max_wait: Optional[int] = None):
     pool = get_key_pool(max_wait)
     return pool.call(lambda key: fn(get_firecrawl_client(key)))
 
-
-def firecrawl_job(start, wait, max_wait: Optional[int] = None):
-    """Pool the job-start request, then poll on the same client/key.
-
-    start(client) -> job (something with .id); wait(client, job_id) -> result.
-    Polling never switches key: a 429 on a status check must not create a
-    second job on another account.
-    """
-    config = load_config()
-    if is_gateway(config):
-        # the gateway answers 501 for crawl/extract; let that error surface as is
-        client = get_firecrawl_client(config["gateway_token"])
-        job = start(client)
-        return wait(client, job.id)
-    pool = get_key_pool(max_wait)
-    holder: dict = {}
-
-    def begin(key: str):
-        client = get_firecrawl_client(key)
-        holder["client"] = client
-        return start(client)
-
-    job = pool.call(begin)
-    return wait(holder["client"], job.id)

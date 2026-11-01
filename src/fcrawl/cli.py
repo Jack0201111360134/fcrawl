@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-fcrawl - A powerful CLI tool for Firecrawl
-Simple web scraping from your terminal
+fcrawl - web search, scraping, Reddit, X, YouTube and Dcard for AI coding agents
 """
 
 import click
@@ -15,9 +14,7 @@ force_utf8_stdio()
 
 from .commands.scrape import scrape
 from .commands.resolve import resolve
-from .commands.crawl import crawl
 from .commands.map import map_site
-from .commands.extract import extract
 from .commands.search import search
 from .commands.dev import dev
 from .commands.yt_transcript import yt_transcript
@@ -38,29 +35,20 @@ console = Console()
 @click.version_option(package_name="fcrawl", prog_name="fcrawl")
 def cli(ctx):
     """
-    fcrawl - Firecrawl CLI Tool
+    fcrawl - the web for AI coding agents
 
-    Simple and powerful web scraping for Claude Code.
-
-    \b
-    Quick start:
-        fcrawl scrape https://example.com           # Scrape to terminal
-        fcrawl scrape https://example.com -o out.md # Save to file
-        fcrawl scrape https://example.com -f links  # Get links only
+    Search Google, read pages as markdown, and read Reddit, X, YouTube and Dcard.
 
     \b
-    More commands:
-        fcrawl crawl https://blog.com --limit 10    # Crawl site to folder
-        fcrawl map https://docs.site.com            # Discover URLs
-        fcrawl search "query"                       # Fast web search via Serper
-        fcrawl dev "query"                          # Code search: issues, PRs, READMEs, docs
-
-    \b
-    Notes:
-        - extract: NOT WORKING. Use a sub-agent with scrape instead.
-        - crawl: May not discover links on some sites. Workaround:
-          1. fcrawl scrape URL -f links  (discover links)
-          2. fcrawl scrape each link as needed
+    Common commands:
+        fcrawl search "query"                       # Google search (Serper)
+        fcrawl scrape URL --save-temp               # Page to markdown file
+        fcrawl reddit post URL --json               # Reddit thread + comments
+        fcrawl x tweet URL --thread                 # X thread
+        fcrawl yt-transcript URL                    # YouTube transcript
+        fcrawl dcard search "query"                 # Dcard posts
+        fcrawl dev "error message"                  # GitHub issues, PRs, docs
+        fcrawl setup claude-code                    # Install skill + hook for Claude Code
     """
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
@@ -68,9 +56,7 @@ def cli(ctx):
 
 # Register commands
 cli.add_command(scrape)
-cli.add_command(crawl)
 cli.add_command(map_site, name="map")
-cli.add_command(extract)
 cli.add_command(search)
 cli.add_command(resolve)
 cli.add_command(dev)
