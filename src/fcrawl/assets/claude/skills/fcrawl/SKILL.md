@@ -30,8 +30,6 @@ fcrawl search "query" -l 20                       # more: each extra page costs 
 fcrawl search "query" -L zh-TW                    # locale
 fcrawl search "query" --location "Taipei, Taiwan" # location bias
 fcrawl search "site:github.com web scraping"      # domain targeting
-fcrawl csearch "query"                            # browser multi-engine fallback (slow)
-fcrawl gsearch "query"                            # browser Google fallback
 ```
 
 **`[goto]` results are normal, not broken.** Google sometimes wraps results after the top few in
