@@ -19,7 +19,7 @@ fcrawl is a Python CLI (Click + Rich, managed with uv) that gives AI coding agen
 ```
 src/fcrawl/
   cli.py                 registers every command; `config` lives here
-  commands/              one module per command: scrape, search, resolve, map, reddit, x, dcard, dev,
+  commands/              one module per command: scrape, search, resolve, map, reddit, x, dcard, dev, papers,
                          yt_transcript, yt_channel, yt_search, transcribe, cache_cmd, setup
     _x_gateway.py        X through the gateway (/gw/x/gql); _x_twitterapi.py, _x_diagnose.py other X backends
   utils/config.py        config loading, is_gateway(), check_gateway_url(), get_firecrawl_client(), firecrawl_call()
@@ -40,7 +40,7 @@ Dependencies worth knowing: `firecrawl-py` and `twscrape` are pinned to Arthur's
 ## Tests and lint
 
 ```bash
-uv run --with pytest python -m pytest -q     # 133 tests, all offline
+uv run --with pytest python -m pytest -q     # 180 tests, all offline
 uvx ruff check src tests                     # config in pyproject: pyflakes + syntax only
 ```
 
@@ -60,5 +60,6 @@ Smoke tests against the live gateway cost real credits (search 1 Serper credit, 
 ## Known gaps
 
 - `dev` calls Firecrawl Cloud directly (not the gateway): free per-IP tier unless `api_key` is set.
+- `papers` Research Index calls (search/show/read/related) and the `papers pdf` OA lookups (OpenAlex, Semantic Scholar) go directly from the client, keyless; only Scholar goes through the gateway (`/gw/search` type scholar).
 - `scrape -f extract` is a leftover format option, untested against the gateway.
 - With no `.fcrawlrc`, `api_url` defaults to `http://localhost:3002` (self-hosted Firecrawl), and a newcomer sees "connection refused".

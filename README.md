@@ -92,6 +92,14 @@ fcrawl dev "error message"
 fcrawl dev "error message" -t issue -t pull_request
 ```
 
+**Academic papers** (new: Google Scholar + Firecrawl's Research Index, merged)
+
+```bash
+fcrawl papers "query"                  # titles, year, citations, abstract, PDF link
+fcrawl papers read arxiv:ID -q "..."   # the passages of one paper that answer a question
+fcrawl papers pdf doi:...              # a legal free copy, if one exists
+```
+
 More: `map`, `resolve`, `cache`, `config`, `x diagnose`, and every flag, in [docs/commands.md](docs/commands.md). Any command also takes `--help`.
 
 ## How it works

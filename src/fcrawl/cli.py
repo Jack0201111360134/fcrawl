@@ -17,6 +17,7 @@ from .commands.resolve import resolve
 from .commands.map import map_site
 from .commands.search import search
 from .commands.dev import dev
+from .commands.papers import papers
 from .commands.yt_transcript import yt_transcript
 from .commands.yt_channel import yt_channel
 from .commands.yt_search import yt_search
@@ -48,6 +49,7 @@ def cli(ctx):
         fcrawl yt-transcript URL                    # YouTube transcript
         fcrawl dcard search "query"                 # Dcard posts
         fcrawl dev "error message"                  # GitHub issues, PRs, docs
+        fcrawl papers "query"                       # Academic papers (Scholar + Research Index)
         fcrawl setup claude-code                    # Install skill + hook for Claude Code
     """
     if ctx.invoked_subcommand is None:
@@ -60,6 +62,7 @@ cli.add_command(map_site, name="map")
 cli.add_command(search)
 cli.add_command(resolve)
 cli.add_command(dev)
+cli.add_command(papers)
 cli.add_command(yt_transcript)
 cli.add_command(yt_channel)
 cli.add_command(yt_search)

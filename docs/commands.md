@@ -116,6 +116,28 @@ fcrawl dev "config" --source DOC_SOURCE_ID
 
 Searches GitHub issues, merged PRs, READMEs and curated docs, and returns the matching passage. Repo filters (`--language`, `--topic`, `--license`, `--min-stars`, `--max-stars`) drop doc results. `dev` always calls Firecrawl Cloud directly, not the gateway. It works without a key at a small daily per-IP limit, and with a Firecrawl `api_key` it uses that key (2 credits per 10 results).
 
+## papers — academic papers (Google Scholar + Firecrawl Research Index)
+
+```bash
+fcrawl papers "query"                              # both engines, merged and deduped (= papers search)
+fcrawl papers "query" --engine scholar|index|all   # one engine only
+fcrawl papers "query" --since 2024 [--until 2025]  # year or YYYY-MM-DD
+fcrawl papers "query" --authors Vaswani --category cs.LG   # Research Index filters
+fcrawl papers "query" --sort citations|date -l 20 --abstracts --json
+fcrawl papers show ID                              # metadata + full abstract (OpenAlex for DOIs the index lacks)
+fcrawl papers read ID -q "question" [-k 4]         # full-text passages that answer the question
+fcrawl papers related ID [--mode similar|citers|references] [--intent "..."]
+fcrawl papers pdf ID [--no-scholar]                # legal free copy, then: fcrawl scrape <url> --save-temp
+```
+
+IDs: `arxiv:1706.03762`, `doi:10.1038/...`, `pmid:N`, `pmcid:PMCN`, bare arXiv ids/DOIs, or arxiv.org / doi.org / PubMed / PMC URLs.
+
+- **scholar** is Google Scholar through Serper (gateway: `/gw/search` with `type: "scholar"`; direct mode: `serper_api_key`). It covers every field including IEEE/ACM and gives the year, citation count and often a PDF link. Cost: 1 Serper credit per 10 results, shown as `credits:` on stderr. Google Scholar returns at most 10 per page, and a year filter can return fewer.
+- **index** is Firecrawl's Research Index: about 43M abstracts from PubMed, bioRxiv, medRxiv and arXiv. It is free and keyless and called directly (like `dev`), with a Firecrawl `api_key` only raising the rate limit. It gives full abstracts and powers `read`, `related` and `show`. It is weak on engineering venues (IEEE circuits papers are mostly missing), and full-text passages exist mainly for arXiv papers.
+- The default `all` runs both in parallel and interleaves them rank by rank. The same paper (same DOI, arXiv or PubMed id, or the same title of 4+ words from both engines) is shown once, with both engines' facts. If one engine fails, the other's results still print, with a warning.
+- `--sort citations|date` re-sorts what was found; it does not search for the most-cited papers overall.
+- `pdf` only looks at legal open-access sources: arXiv, OpenAlex OA locations (publisher OA pages, PMC and other repositories), Semantic Scholar's open PDF (keyless, often rate limited), and finally the paper's Scholar PDF links (1 Serper credit, skip with `--no-scholar`). Those last links are filtered by host: repositories, OA publishers and university (`.edu`, `.ac.*`) pages are shown, ResearchGate/Academia uploads are shown with a warning, and unknown hosts are hidden. When nothing is found it says so and gives the DOI link. There is no shadow-library support and none is planned. A publisher page behind a login wall scrapes as a normal page; read it and you will see it is abstract only.
+
 ## map — discover a site's URLs
 
 ```bash

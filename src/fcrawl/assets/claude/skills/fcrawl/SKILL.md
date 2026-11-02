@@ -63,6 +63,23 @@ fcrawl dev "retry on 429" -r owner/repo -p 3
 
 Use `dev` first when debugging a library; fall back to `search`. Results stay in Bash output like `search`.
 
+## Academic papers
+
+For papers, use `fcrawl papers`, not `search`. It merges Google Scholar (every field incl. IEEE/ACM; year, citation count, PDF link; 1 Serper credit per 10) with Firecrawl's free Research Index (full abstracts from PubMed, bioRxiv, medRxiv and arXiv). Results stay in Bash output.
+
+```bash
+fcrawl papers "query"                          # both engines, deduped; ids like arxiv:… / doi:… / pmid:…
+fcrawl papers "query" --since 2024 --sort citations
+fcrawl papers "query" --engine index --category cs.LG   # free, arXiv/biomed only
+fcrawl papers read arxiv:1706.03762 -q "how is X measured?"   # passages that answer it (mainly arXiv)
+fcrawl papers related arxiv:1706.03762 --mode citers          # or references / similar
+fcrawl papers show doi:10.1109/…               # metadata + full abstract
+fcrawl papers pdf doi:10.1109/…                # legal free copy (arXiv, OA, PMC, author pages)
+fcrawl scrape https://arxiv.org/pdf/1706.03762 --save-temp   # then read the PDF text
+```
+
+Engineering papers (IEEE circuits, ACM) come mostly from Scholar; the index is strongest for AI/ML and biomedicine. If `papers pdf` finds no free copy, a publisher page is usually abstract only: say so and suggest the user's own school access. Never use shadow libraries.
+
 ## Scraping pages
 
 ```bash
