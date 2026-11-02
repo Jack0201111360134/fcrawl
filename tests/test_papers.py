@@ -73,7 +73,12 @@ def env(tmp_path, monkeypatch):
 
 
 def run(*args):
-    return CliRunner().invoke(cli, ["papers", *args])
+    return CliRunner().invoke(cli, ["papers", *args])  # .output = stdout + stderr, .stdout alone
+
+
+def stdout_json(res):
+    """--json: stdout must be exactly one JSON document (notes and credits go to stderr)."""
+    return json.loads(res.stdout)
 
 
 # --- ids -----------------------------------------------------------------------
@@ -199,7 +204,7 @@ def test_search_scholar_pages_cost_one_credit_each(env):
     res = run("q", "--engine", "scholar", "-l", "30", "--json")
     assert res.exit_code == 0, res.output
     assert [c[2].get("page", 1) for c in calls["post"]] == [1, 2, 3]
-    data = json.loads(res.output[res.output.index("{"):])
+    data = stdout_json(res)
     assert data["meta"]["scholarCredits"] == 3 and not calls["get"]
 
 
@@ -262,7 +267,7 @@ def test_search_input_checks(env):
 
 def test_search_json_shape(env):
     res = run("q", "--json")
-    data = json.loads(res.output[res.output.index("{"):])
+    data = stdout_json(res)
     assert data["engines"] == ["scholar", "index"]
     first = data["results"][0]
     assert set(first) >= {"title", "year", "venue", "citedBy", "ids", "id", "links", "snippet", "abstract", "sources"}
@@ -368,7 +373,7 @@ def test_pdf_openalex_oa_locations_ranked(env):
             {"is_oa": False, "landing_page_url": "https://pubmed.ncbi.nlm.nih.gov/1", "source": {"type": "repository"}},
         ]})
     res = run("pdf", "doi:10.1038/s41586-021-03819-2", "--json")
-    data = json.loads(res.output[res.output.index("{"):])
+    data = stdout_json(res)
     urls = [c["url"] for c in data["candidates"]]
     assert urls[0] == "https://www.nature.com/articles/s41586-021-03819-2.pdf"
     assert "https://pubmed.ncbi.nlm.nih.gov/1" not in urls  # not OA
@@ -420,3 +425,110 @@ def test_no_shadow_libraries_anywhere():
     src = inspect.getsource(P).lower()
     for name in ("sci-hub", "scihub", "libgen", "annas-archive", "anna's archive"):
         assert name not in src
+
+
+# --- review round 1 ----------------------------------------------------------------
+
+
+def test_r1_json_stdout_is_pure_json_with_warnings(env):
+    calls, state, _ = env
+    state["scholar"] = lambda payload, page: R(503, {"error": "pool_exhausted: [/red] Serper"})
+    res = run("q", "--json")
+    data = stdout_json(res)
+    assert data["meta"]["errors"]["scholar"].startswith("Scholar error 503")
+    assert "credits:" in res.stderr and "scholar:" in res.stderr  # markup in the message did not crash rich
+
+
+def test_r1_pdf_json_stdout_is_pure_json(env):
+    calls, state, _ = env
+    state["index"] = lambda url, params: (R(200, {"title": "Closed one", "ids": {}, "open_access": {}, "locations": []})
+                                          if "openalex" in url else R(429, {}))
+    state["scholar"] = lambda payload, page: R(200, {"organic": [], "gw": {"gwType": "scholar", "gwCreditsUsed": 1}})
+    res = run("pdf", "doi:10.1/x", "--json")
+    assert stdout_json(res)["scholarCredits"] == 1 and "credits: 1" in res.stderr
+
+
+def test_r1_credits_survive_a_later_page_failure(env):
+    calls, state, _ = env
+    full = [dict(SCHOLAR_ITEMS[1], title=f"T{i}", link=f"https://e/{i}") for i in range(10)]
+
+    def scholar(payload, page):
+        if page == 1:
+            return R(200, {"organic": full, "gw": {"gwType": "scholar", "gwCreditsUsed": 1}})
+        return R(504, {"error": "upstream_error: Serper timed out", "details": {"creditsUsed": 1}})
+
+    state["scholar"] = scholar
+    res = run("q", "-l", "20", "--json")
+    data = stdout_json(res)
+    assert data["meta"]["scholarCredits"] == 2  # page 1 + the billed page-2 timeout
+    assert "credits: 2 Serper" in res.stderr
+
+
+def test_r1_gateway_cache_hit_is_free(env):
+    calls, state, _ = env
+    # an older gateway's cache hit: no gwCreditsUsed, top-level credits still 1
+    state["scholar"] = lambda payload, page: R(200, {"organic": SCHOLAR_ITEMS, "credits": 1,
+                                                       "gw": {"gwType": "scholar", "gwCached": True}})
+    res = run("q", "--engine", "scholar")
+    assert "credits: 0 Serper (Scholar), cached" in res.stderr
+
+
+def test_r1_pdf_needs_title_or_both_dois(env):
+    calls, state, _ = env
+    state["index"] = lambda url, params: (R(200, {"title": "Gut microbes and sleep", "ids": {"pmid": "https://pubmed.ncbi.nlm.nih.gov/5"},
+                                                  "open_access": {}, "locations": []})
+                                          if "openalex" in url else R(404, {}))
+    state["scholar"] = lambda payload, page: R(200, {"organic": [
+        {"title": "A different paper", "link": "https://x.edu/a", "pdfUrl": "https://arxiv.org/pdf/9"}],
+        "gw": {"gwType": "scholar", "gwCreditsUsed": 1}})
+    data = stdout_json(run("pdf", "pmid:5", "--json"))
+    assert data["found"] is False and data["candidates"] == []
+
+
+@pytest.mark.parametrize("raw,want", [
+    ("https://doi.org/10.1002/(SICI)1099-0844(199912)17:4%3C290::AID-CBF849%3E3.0.CO;2-P",
+     "doi:10.1002/(sici)1099-0844(199912)17:4<290::aid-cbf849>3.0.co;2-p"),
+    ("https://arxiv.org/abs/1706.03762?context=cs.LG", "arxiv:1706.03762"),
+    ("https://arxiv.org/pdf/1706.03762v2?download=1", "arxiv:1706.03762v2"),
+    ("https://arxiv.org/abs/1706.03762#section", "arxiv:1706.03762"),
+    ("https://www.ncbi.nlm.nih.gov/pmc/articles/PMC8371605/", "pmcid:PMC8371605"),
+    ("https://onlinelibrary.wiley.com/doi/full/10.1002/adma.202001234", "doi:10.1002/adma.202001234"),
+    ("https://doi.org/10.1016/S0140-6736(20)30183-5", "doi:10.1016/s0140-6736(20)30183-5"),
+])
+def test_r1_normalize_id_urls(raw, want):
+    assert P.normalize_id(raw) == want
+
+
+def test_r1_scholar_pubmed_links_dedup_with_index():
+    s = P.from_scholar({"title": "Short", "link": "https://pubmed.ncbi.nlm.nih.gov/34515826/"})
+    s2 = P.from_scholar({"title": "Other", "link": "https://pmc.ncbi.nlm.nih.gov/articles/PMC13172344/"})
+    i = [P.from_index(it) for it in INDEX_RESULTS[1:]]
+    i.append(P.from_index({"primaryId": "pmcid:PMC13172344", "ids": {"pmcid": ["PMC13172344"]}, "title": "Long title"}))
+    out = P.merge([s, s2], i)
+    assert len(out) == 2 and all(p["sources"] == ["scholar", "index"] for p in out)
+
+
+def test_r1_merge_consolidates_through_a_linking_record():
+    a = P.from_scholar({"title": "Paper A", "link": "https://doi.org/10.1145/12345.6789"})
+    b = P.from_index({"primaryId": "arxiv:2001.00001", "ids": {"arxiv": ["2001.00001"]}, "title": "Preprint B"})
+    link = P.from_scholar({"title": "Paper A again", "link": "https://doi.org/10.1145/12345.6789",
+                           "pdfUrl": "https://arxiv.org/pdf/2001.00001"})
+    out = P.merge([a, link], [b])
+    assert len(out) == 1
+    assert out[0]["ids"] == {"doi": "10.1145/12345.6789", "arxiv": "2001.00001"} and out[0]["sources"] == ["scholar", "index"]
+
+
+def test_r1_terminal_controls_stripped_and_markup_safe(env):
+    calls, state, _ = env
+
+    def index(url, params):
+        if url.endswith("/similar"):
+            return R(200, {"success": True, "results": [{"primaryId": "pmid:1", "ids": {}, "title": "T\x1b]52;c;ZXZpbA==\x07x",
+                                                         "abstract": "a"}]})
+        return R(200, {"success": True, "paper": {"title": "[/bold] broken [red"}})
+
+    state["index"] = index
+    res = run("related", "pmid:1")
+    assert res.exit_code == 0, res.output
+    assert "\x1b" not in res.stdout and "\x07" not in res.stdout and "T]52;c;ZXZpbA==x" in res.stdout
+    assert "[/bold] broken" in res.stderr

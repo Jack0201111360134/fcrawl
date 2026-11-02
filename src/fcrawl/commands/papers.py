@@ -25,10 +25,12 @@ from urllib.parse import quote, unquote, urlsplit
 
 import click
 import requests
+from rich.markup import escape
 
 from ..utils.cache import cache_key, read_cache, write_cache
 from ..utils.config import is_gateway
-from ..utils.output import Progress, SpinnerColumn, TextColumn, console, handle_output
+from ..utils.output import Progress, SpinnerColumn, TextColumn, handle_output
+from ..utils.output import err_console as console  # notes and credits: stderr, so stdout stays parseable
 from .dev import _get_cloud_api_key
 from .search import SEARCH_GATEWAY_TIMEOUT, _parse_locale, serper_target
 
@@ -46,7 +48,12 @@ YEAR_RANGE = (1800, 2200)  # what the gateway accepts for as_ylo / as_yhi
 
 
 class PapersError(RuntimeError):
-    """A failure worth one readable line (no traceback)."""
+    """A failure worth one readable line (no traceback). `credits`: Serper credits the
+    failed call had already spent (a later Scholar page failing after earlier ones)."""
+
+    def __init__(self, message: str, credits: int = 0):
+        super().__init__(message)
+        self.credits = credits
 
 
 class NotInIndex(PapersError):
@@ -57,10 +64,50 @@ class NotInIndex(PapersError):
 
 _ARXIV_NEW = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$")
 _ARXIV_OLD = re.compile(r"^[a-z-]+(\.[A-Z]{2})?/\d{7}(v\d+)?$")
-_DOI = re.compile(r"10\.\d{4,9}/[^\s?#\"<>]+")
+_DOI = re.compile(r"10\.\d{4,9}/[^\s?#\"]+")
 _DOI_TAIL = re.compile(r"(\.pdf|/full|/abstract|/pdf|/epdf|/html|/meta)+$", re.I)
-_ARXIV_URL = re.compile(r"arxiv\.org/(?:abs|pdf|html)/([^?#\s]+?)(?:\.pdf)?/?$", re.I)
-_PMC_URL = re.compile(r"(?:/pmc/articles/|pmc\.ncbi\.nlm\.nih\.gov/articles/)(PMC\d+|\d+)", re.I)
+_ARXIV_PATH = re.compile(r"^/(?:abs|pdf|html)/(.+?)(?:\.pdf)?/?$", re.I)
+_PMC_PATH = re.compile(r"^(?:/pmc)?/articles/(PMC\d+|\d+)", re.I)
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def _url_parts(text: str) -> tuple[str, str]:
+    """(host, decoded path) of an http(s) URL; query and fragment are never part of an id."""
+    try:
+        u = urlsplit(text)
+    except ValueError:
+        return "", ""
+    if u.scheme.lower() not in ("http", "https"):
+        return "", ""
+    return (u.hostname or "").lower().rstrip("."), unquote(u.path)
+
+
+def ids_from_url(url: Optional[str]) -> dict[str, str]:
+    """arxiv / pmcid / pmid / doi found in a paper URL (arxiv.org, PMC, PubMed, doi.org,
+    publisher pages with the DOI in the path)."""
+    if not isinstance(url, str):
+        return {}
+    host, path = _url_parts(url)
+    if not host:
+        return {}
+    ids: dict[str, str] = {}
+    if host == "arxiv.org" or host.endswith(".arxiv.org"):
+        m = _ARXIV_PATH.match(path)
+        if m:
+            ids["arxiv"] = m.group(1)
+    if host in ("pmc.ncbi.nlm.nih.gov", "www.ncbi.nlm.nih.gov", "ncbi.nlm.nih.gov", "europepmc.org"):
+        m = _PMC_PATH.match(path)
+        if m:
+            v = m.group(1).upper()
+            ids["pmcid"] = v if v.startswith("PMC") else "PMC" + v
+    if host == "pubmed.ncbi.nlm.nih.gov":
+        m = re.match(r"^/(\d{1,9})/?$", path)
+        if m:
+            ids["pmid"] = m.group(1)
+    doi = doi_in(path)
+    if doi:
+        ids["doi"] = doi
+    return ids
 
 
 def normalize_id(raw: str) -> str:
@@ -72,19 +119,10 @@ def normalize_id(raw: str) -> str:
         raise click.BadParameter("not a paper id", param_hint="ID")
     low = text.lower()
     if low.startswith(("http://", "https://")):
-        m = _ARXIV_URL.search(text)
-        if m:
-            return "arxiv:" + m.group(1)
-        m = _PMC_URL.search(text)
-        if m:
-            v = m.group(1).upper()
-            return "pmcid:" + (v if v.startswith("PMC") else "PMC" + v)
-        m = re.search(r"pubmed\.ncbi\.nlm\.nih\.gov/(\d+)", text)
-        if m:
-            return "pmid:" + m.group(1)
-        doi = doi_in(unquote(text))
-        if doi:
-            return "doi:" + doi
+        ids = ids_from_url(text)
+        for k in ("arxiv", "pmcid", "pmid", "doi"):
+            if ids.get(k):
+                return f"{k}:{ids[k]}"
         raise click.BadParameter("no arXiv id, DOI or PubMed id in this URL", param_hint="ID")
     for prefix in ("arxiv:", "doi:", "pmid:", "pmcid:"):
         if low.startswith(prefix):
@@ -118,15 +156,12 @@ def doi_in(text: Optional[str]) -> Optional[str]:
     m = _DOI.search(text)
     if not m:
         return None
-    doi = _DOI_TAIL.sub("", m.group(0).rstrip(".,;)]"))
+    doi = _DOI_TAIL.sub("", m.group(0)).rstrip(".,;")
+    # a closing bracket belongs to the DOI only when it closes one inside it: SICI DOIs
+    # like 10.1002/(SICI)1099-0844(199912)17:4<290::AID-CBF849>3.0.CO;2-P keep theirs
+    while doi and doi[-1] in ")]" and doi.count("(") + doi.count("[") < doi.count(")") + doi.count("]"):
+        doi = doi[:-1].rstrip(".,;")
     return doi.lower() if "/" in doi and len(doi) > 7 else None
-
-
-def arxiv_in(text: Optional[str]) -> Optional[str]:
-    if not isinstance(text, str):
-        return None
-    m = _ARXIV_URL.search(text)
-    return m.group(1) if m else None
 
 
 def strip_version(arxiv_id: str) -> str:
@@ -175,8 +210,13 @@ def title_norm(title: Any) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+def clean(text: Any) -> str:
+    """API text for the terminal: no control characters (escape sequences), newlines kept."""
+    return _CONTROL.sub("", text) if isinstance(text, str) else ""
+
+
 def one_line(text: Any) -> str:
-    return re.sub(r"\s+", " ", text).strip() if isinstance(text, str) else ""
+    return re.sub(r"\s+", " ", clean(text)).strip()
 
 
 def shorten(text: str, n: int = SNIPPET_CHARS) -> str:
@@ -249,7 +289,8 @@ def scholar_search(query: str, limit: int, ylo: Optional[int], yhi: Optional[int
                    hl: Optional[str], no_cache: bool) -> tuple[list[dict], int, bool]:
     """Google Scholar through Serper. Returns (organic items, Serper credits spent, any
     page served from the gateway's cache). Gateway mode: /gw/search type scholar with
-    the family token; direct mode: Serper /scholar with serper_api_key."""
+    the family token; direct mode: Serper /scholar with serper_api_key. A PapersError
+    carries the credits earlier pages already spent."""
     endpoint, api_key = serper_target()
     gateway = is_gateway()
     if not gateway:
@@ -260,58 +301,78 @@ def scholar_search(query: str, limit: int, ylo: Optional[int], yhi: Optional[int
     if no_cache:
         headers["X-No-Cache"] = "1"
     items: list[dict] = []
-    credits = 0
-    gw_cached = False
-    for page in range(1, max(1, math.ceil(limit / SCHOLAR_PAGE)) + 1):
-        payload: dict[str, Any] = {"q": query, "num": SCHOLAR_PAGE}
-        if page > 1:
-            payload["page"] = page
-        if gateway:
-            payload["type"] = "scholar"
-        if ylo is not None:
-            payload["as_ylo"] = ylo
-        if yhi is not None:
-            payload["as_yhi"] = yhi
-        if hl:
-            payload["hl"] = hl
+    spent = {"credits": 0, "cached": False}
+    try:
+        for page in range(1, max(1, math.ceil(limit / SCHOLAR_PAGE)) + 1):
+            organic = _scholar_page(endpoint, headers, gateway, query, page, ylo, yhi, hl, spent)
+            items.extend(organic)
+            if len(organic) < SCHOLAR_PAGE or len(items) >= limit:
+                break
+    except PapersError as exc:
+        exc.credits += spent["credits"]
+        raise
+    return items[:limit], spent["credits"], spent["cached"]
+
+
+def _billed(body: Any) -> int:
+    """Credits a failed gateway answer says were spent anyway (details.creditsUsed)."""
+    details = body.get("details") if isinstance(body, dict) else None
+    used = details.get("creditsUsed") if isinstance(details, dict) else None
+    return used if type(used) is int and 0 <= used <= 10 else 0
+
+
+def _scholar_page(endpoint: str, headers: dict, gateway: bool, query: str, page: int,
+                  ylo: Optional[int], yhi: Optional[int], hl: Optional[str], spent: dict) -> list[dict]:
+    payload: dict[str, Any] = {"q": query, "num": SCHOLAR_PAGE}
+    if page > 1:
+        payload["page"] = page
+    if gateway:
+        payload["type"] = "scholar"
+    if ylo is not None:
+        payload["as_ylo"] = ylo
+    if yhi is not None:
+        payload["as_yhi"] = yhi
+    if hl:
+        payload["hl"] = hl
+    try:
+        resp = requests.post(endpoint, headers=headers, json=payload,
+                             timeout=SEARCH_GATEWAY_TIMEOUT if gateway else 30)
+    except requests.RequestException as exc:
+        raise PapersError(f"Scholar request failed ({type(exc).__name__})") from None
+    if resp.status_code != 200:
+        detail = resp.text[:160]
+        body = None
         try:
-            resp = requests.post(endpoint, headers=headers, json=payload,
-                                 timeout=SEARCH_GATEWAY_TIMEOUT if gateway else 30)
-        except requests.RequestException as exc:
-            raise PapersError(f"Scholar request failed ({type(exc).__name__})") from None
-        if resp.status_code != 200:
-            detail = resp.text[:160]
-            try:
-                body = resp.json()
-                detail = str(body.get("error") or body.get("message") or detail)
-            except ValueError:
-                pass
-            if gateway and resp.status_code == 400 and "search or news" in detail:
+            body = resp.json()
+            detail = str(body.get("error") or body.get("message") or detail)
+        except (ValueError, AttributeError):
+            pass
+        if gateway:
+            spent["credits"] += _billed(body)
+            if resp.status_code == 400 and "search or news" in detail:
                 raise PapersError("this gateway does not support Scholar yet; ask Arthur to update it")
-            if resp.status_code == 429 and resp.headers.get("Retry-After"):
-                detail += f" (retry after {resp.headers['Retry-After']}s)"
-            raise PapersError(f"Scholar error {resp.status_code}: {detail}")
-        try:
-            data = resp.json()
-        except ValueError:
-            raise PapersError("Scholar returned non-JSON") from None
-        if not isinstance(data, dict):
-            raise PapersError("Scholar returned an unexpected shape")
-        gw = data.get("gw") if isinstance(data.get("gw"), dict) else {}
-        if gateway:
-            if gw and gw.get("gwType") != "scholar":
-                raise PapersError("this gateway answered with web results; ask Arthur to update it")
-            used = gw.get("gwCreditsUsed")
-            credits += used if type(used) is int and used >= 0 else 1
-            gw_cached = gw_cached or bool(gw.get("gwCached"))
+        if resp.status_code == 429 and resp.headers.get("Retry-After"):
+            detail += f" (retry after {resp.headers['Retry-After']}s)"
+        raise PapersError(f"Scholar error {resp.status_code}: {detail}")
+    try:
+        data = resp.json()
+    except ValueError:
+        raise PapersError("Scholar returned non-JSON") from None
+    if not isinstance(data, dict):
+        raise PapersError("Scholar returned an unexpected shape")
+    gw = data.get("gw") if isinstance(data.get("gw"), dict) else {}
+    if gateway:
+        if gw and gw.get("gwType") != "scholar":
+            raise PapersError("this gateway answered with web results; ask Arthur to update it")
+        used = gw.get("gwCreditsUsed")
+        if gw.get("gwCached"):
+            spent["cached"] = True  # a gateway cache hit is free whatever else it says
         else:
-            c = data.get("credits")
-            credits += c if type(c) is int and c >= 0 else 1
-        organic = [it for it in data.get("organic") or [] if isinstance(it, dict)]
-        items.extend(organic)
-        if len(organic) < SCHOLAR_PAGE or len(items) >= limit:
-            break
-    return items[:limit], credits, gw_cached
+            spent["credits"] += used if type(used) is int and used >= 0 else 1
+    else:
+        c = data.get("credits")
+        spent["credits"] += c if type(c) is int and c >= 0 else 1
+    return [it for it in data.get("organic") or [] if isinstance(it, dict)]
 
 
 # --- normalisation -----------------------------------------------------------
@@ -320,13 +381,11 @@ def scholar_search(query: str, limit: int, ylo: Optional[int], yhi: Optional[int
 def from_scholar(it: dict) -> dict:
     link = it.get("link") if isinstance(it.get("link"), str) else None
     pdf = it.get("pdfUrl") if isinstance(it.get("pdfUrl"), str) else None
-    ids: dict[str, str] = {}
-    ax = arxiv_in(link) or arxiv_in(pdf)
-    if ax:
-        ids["arxiv"] = strip_version(ax)
-    doi = doi_in(link) or doi_in(pdf)
-    if doi:
-        ids["doi"] = doi
+    ids = ids_from_url(link)
+    for k, v in ids_from_url(pdf).items():
+        ids.setdefault(k, v)
+    if ids.get("arxiv"):
+        ids["arxiv"] = strip_version(ids["arxiv"])
     year = it.get("year") if type(it.get("year")) is int else None
     cited = it.get("citedBy") if type(it.get("citedBy")) is int else None
     return {
@@ -409,25 +468,26 @@ def _absorb(into: dict, other: dict) -> None:
 def merge(*lists: list[dict]) -> list[dict]:
     """Interleave the engines rank by rank (each engine's order is its relevance), and
     fold duplicates (same DOI / arXiv / PubMed id, or same title across engines) into
-    the first occurrence."""
+    the first occurrence. A record that links two earlier ones (a DOI one and an arXiv
+    one) folds all three together."""
     out: list[dict] = []
-    by_key: dict[str, dict] = {}
     for rank in range(max((len(x) for x in lists), default=0)):
         for lst in lists:
             if rank >= len(lst):
                 continue
             p = lst[rank]
             keys = _id_keys(p)
-            hit = next((by_key[k] for k in keys if k in by_key), None)
-            if hit is None:
-                hit = next((o for o in out if _same_title(o, p)), None)
-            if hit is None:
+            hits = [o for o in out if keys & _id_keys(o)]
+            if not hits:
+                hits = [o for o in out if _same_title(o, p)][:1]
+            if not hits:
                 out.append(p)
-                hit = p
-            else:
-                _absorb(hit, p)
-            for k in _id_keys(hit):
-                by_key.setdefault(k, hit)
+                continue
+            first = hits[0]
+            _absorb(first, p)
+            for other in hits[1:]:
+                _absorb(first, other)
+                out.remove(other)
     for p in out:
         p.setdefault("id", None)
         if not p["id"]:
@@ -447,7 +507,7 @@ def sort_papers(papers: list[dict], how: str) -> list[dict]:
 
 
 def print_paper(n: int, p: dict, abstracts: bool) -> None:
-    print(f"[{n}] {p['title'] or '(no title)'}")
+    print(f"[{n}] {one_line(p['title']) or '(no title)'}")
     facts = []
     if p.get("year"):
         facts.append(str(p["year"]))
@@ -458,13 +518,14 @@ def print_paper(n: int, p: dict, abstracts: bool) -> None:
         facts.append(p["id"])
     print("    " + " · ".join(facts))
     if p.get("venue"):
-        print(f"    {p['venue']}")
+        print(f"    {one_line(p['venue'])}")
     if p["links"].get("page"):
-        print(f"    {p['links']['page']}")
+        print(f"    {one_line(p['links']['page'])}")
     if p["links"].get("pdf"):
-        print(f"    pdf: {p['links']['pdf']}")
+        print(f"    pdf: {one_line(p['links']['pdf'])}")
     text = p.get("abstract") or p.get("snippet")
     if text:
+        text = one_line(text)
         print("    " + (text if abstracts else shorten(text)))
 
 
@@ -602,7 +663,7 @@ def search_cmd(query: str, engine: str, limit: int, since: Optional[str], until:
     runners = {"scholar": run_scholar, "index": run_index}
     raw: dict[str, list[dict]] = {}
     with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as prog:
-        prog.add_task(f"Searching papers for '{query}'...", total=None)
+        prog.add_task(f"Searching papers for '{escape(query)}'...", total=None)
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = {name: pool.submit(runners[name]) for name in wanted}
             for name, fut in futures.items():
@@ -610,9 +671,11 @@ def search_cmd(query: str, engine: str, limit: int, since: Optional[str], until:
                     raw[name] = fut.result()
                 except PapersError as exc:
                     errors[name] = str(exc)
+                    if name == "scholar" and exc.credits:
+                        scholar_credits = exc.credits  # earlier pages were billed before the failure
     for name, msg in errors.items():
         if not msg.startswith("skipped") or engine != "all":
-            console.print(f"[yellow]{name}: {msg}[/yellow]", markup=True, highlight=False)
+            console.print(f"[yellow]{name}: {escape(msg)}[/yellow]", highlight=False)
     if not raw:
         console.print("[red]No engine answered[/red]")
         raise click.Abort()
@@ -669,16 +732,16 @@ def show_cmd(paper_id: str, json_output: bool, no_cache: bool):
         source = "index"
     except NotInIndex:
         if not pid.startswith(("doi:", "pmid:", "pmcid:")):
-            console.print(f"[red]{pid}: not in the Research Index[/red]", highlight=False)
+            console.print(f"[red]{escape(pid)}: not in the Research Index[/red]", highlight=False)
             raise click.Abort()
         try:
             paper = openalex_work(pid, no_cache)
         except PapersError as exc:
-            console.print(f"[red]{pid}: {exc}[/red]", highlight=False)
+            console.print(f"[red]{escape(pid)}: {escape(str(exc))}[/red]", highlight=False)
             raise click.Abort()
         source = "openalex"
     except PapersError as exc:
-        console.print(f"[red]Error: {exc}[/red]", highlight=False)
+        console.print(f"[red]Error: {escape(str(exc))}[/red]", highlight=False)
         raise click.Abort()
 
     if source == "openalex":
@@ -695,23 +758,23 @@ def show_cmd(paper_id: str, json_output: bool, no_cache: bool):
     if json_output:
         emit_json(out, None)
         return
-    print(out["title"] or "(no title)")
+    print(one_line(out["title"]) or "(no title)")
     if out.get("authors"):
-        print(f"authors: {out['authors']}")
+        print(f"authors: {one_line(out['authors'])}")
     facts = [f"{k}: {out[k]}" for k in ("year", "venue", "citedBy", "created", "updated") if out.get(k)]
     if out.get("categories"):
         facts.append("categories: " + ", ".join(map(str, out["categories"])))
     if out.get("oaStatus"):
         facts.append(f"open access: {out['oaStatus']}")
     if facts:
-        print(" · ".join(facts))
+        print(one_line(" · ".join(facts)))
     print("ids: " + " · ".join(f"{k}:{v}" for k, v in ids.items()) + f"  (via {source})")
     for k, v in out["links"].items():
         if k == "doi" and v == out["links"].get("page"):
             continue
         print(f"{k}: {v}")
     print()
-    print(out.get("abstract") or "(no abstract)")
+    print(clean(out.get("abstract")) or "(no abstract)")
     print("---")
     if source == "index":
         print(f"ask it:   fcrawl papers read {pid} -q \"your question\"")
@@ -741,7 +804,7 @@ def read_cmd(paper_id: str, question: str, passages: int, json_output: bool, no_
         try:
             data = index_get("/" + id_path(pid), {"query": question, "k": passages})
         except PapersError as exc:
-            console.print(f"[red]{pid}: {exc}[/red]", highlight=False)
+            console.print(f"[red]{escape(pid)}: {escape(str(exc))}[/red]", highlight=False)
             raise click.Abort()
         write_cache(CACHE_BUCKET, key, data)
     paper = data.get("paper") if isinstance(data.get("paper"), dict) else {}
@@ -760,7 +823,7 @@ def read_cmd(paper_id: str, question: str, passages: int, json_output: bool, no_
         score = p.get("score")
         print()
         print(f"[{n}]" + (f" score {score:.3f}" if isinstance(score, (int, float)) else ""))
-        print(p["text"].strip())
+        print(clean(p["text"]).strip())
 
 
 @papers.command("related")
@@ -787,7 +850,7 @@ def related_cmd(paper_id: str, mode: str, intent: Optional[str], limit: int, abs
             data = index_get("/" + id_path(pid) + "/similar", params)
             write_cache(CACHE_BUCKET, key, data)
     except PapersError as exc:
-        console.print(f"[red]{pid}: {exc}[/red]", highlight=False)
+        console.print(f"[red]{escape(pid)}: {escape(str(exc))}[/red]", highlight=False)
         raise click.Abort()
     found = [from_index(r) for r in data.get("results") or [] if isinstance(r, dict)]
     if json_output:
@@ -795,10 +858,10 @@ def related_cmd(paper_id: str, mode: str, intent: Optional[str], limit: int, abs
                    "poolSize": data.get("poolSize"), "truncated": data.get("truncated")}, None)
         return
     if not found:
-        console.print(f"[yellow]No {mode} found for {pid} in the Research Index[/yellow]", highlight=False)
+        console.print(f"[yellow]No {mode} found for {escape(pid)} in the Research Index[/yellow]", highlight=False)
         return
-    console.print(f"[green]{len(found)} {mode} of {pid}[/green] [dim](intent: {intent[:80]})[/dim]",
-                  highlight=False, markup=True)
+    console.print(f"[green]{len(found)} {mode} of {escape(pid)}[/green] [dim](intent: {escape(intent[:80])})[/dim]",
+                  highlight=False)
     for n, p in enumerate(found, start=1):
         print_paper(n, p, abstracts)
         print()
@@ -1019,9 +1082,12 @@ def pdf_cmd(paper_id: str, no_scholar: bool, json_output: bool, no_cache: bool):
         try:
             items, scholar_credits, _ = scholar_search(title, SCHOLAR_PAGE, None, None, None, no_cache)
             want = title_norm(title)
+            want_doi = work["ids"].get("doi")
             matched = 0
             for it in items:
-                if title_norm(it.get("title")) != want and doi_in(it.get("link")) != work["ids"].get("doi"):
+                it_doi = ids_from_url(it.get("link")).get("doi")
+                same_doi = bool(want_doi and it_doi and it_doi == want_doi)
+                if not same_doi and title_norm(it.get("title")) != want:
                     continue
                 matched += 1
                 u = it.get("pdfUrl")
@@ -1035,6 +1101,7 @@ def pdf_cmd(paper_id: str, no_scholar: bool, json_output: bool, no_cache: bool):
             notes.append(f"Scholar: {matched} matching result(s)"
                          + (f", {hidden} PDF link(s) from unknown hosts not shown" if hidden else ""))
         except PapersError as exc:
+            scholar_credits = exc.credits
             notes.append(f"Scholar: {exc}")
     elif not cands and not title and kind != "arxiv":
         notes.append("Scholar: skipped (no title to look up)")
@@ -1050,19 +1117,19 @@ def pdf_cmd(paper_id: str, no_scholar: bool, json_output: bool, no_cache: bool):
     head = title or pid
     if work.get("year"):
         head += f" ({work['year']})"
-    print(f"{head} · {pid}")
+    print(f"{one_line(head)} · {pid}")
     if notes:
-        print(" · ".join(notes))
+        print(one_line(" · ".join(notes)))
     if cands:
         print("Free copies (best first):")
         for c in cands:
             extra = ", ".join(x for x in (c.get("version"), c.get("license")) if x)
             flag = "  ⚠ author upload, copyright unclear" if c["kind"] == "social-upload" else ""
-            print(f"  [{c['kind']}] {c['url']}" + (f"  ({extra}; via {c['via']})" if extra else f"  (via {c['via']})")
+            print(f"  [{c['kind']}] {one_line(c['url'])}" + (f"  ({extra}; via {c['via']})" if extra else f"  (via {c['via']})")
                   + flag)
         best = next((c for c in cands if c["kind"] != "social-upload"), cands[0])
         print("---")
-        print(f"read it: fcrawl scrape {best['url']} --save-temp")
+        print(f"read it: fcrawl scrape {one_line(best['url'])} --save-temp")
         return
     print("No legal free copy found.")
     if doi:
