@@ -532,3 +532,58 @@ def test_r1_terminal_controls_stripped_and_markup_safe(env):
     assert res.exit_code == 0, res.output
     assert "\x1b" not in res.stdout and "\x07" not in res.stdout and "T]52;c;ZXZpbA==x" in res.stdout
     assert "[/bold] broken" in res.stderr
+
+
+# --- review round 2 ----------------------------------------------------------------
+
+
+def test_r2_credits_shown_even_when_every_engine_failed(env):
+    calls, state, _ = env
+    full = [dict(SCHOLAR_ITEMS[1], title=f"T{i}", link=f"https://e/{i}") for i in range(10)]
+    state["scholar"] = lambda payload, page: (
+        R(200, {"organic": full, "gw": {"gwType": "scholar", "gwCreditsUsed": 1}}) if page == 1
+        else R(504, {"error": "upstream_error: Serper timed out", "details": {"creditsUsed": 1}}))
+    res = run("q", "--engine", "scholar", "-l", "20")
+    assert res.exit_code != 0 and "credits: 2 Serper" in res.stderr and not res.stdout.strip()
+
+
+def test_r2_merged_record_keeps_every_doi_alias():
+    pre = P.from_scholar({"title": "Preprint title here", "link": "https://arxiv.org/abs/2001.00001",
+                          "pdfUrl": "https://doi.org/10.48550/arxiv.2001.00001"})
+    pub = P.from_index({"primaryId": "arxiv:2001.00001", "ids": {"arxiv": ["2001.00001"], "doi": ["10.1145/3000.1"]},
+                        "title": "Published title"})
+    later = P.from_scholar({"title": "Venue version", "link": "https://dl.acm.org/doi/10.1145/3000.1"})
+    out = P.merge([pre, later], [pub])
+    assert len(out) == 1 and "_aliases" not in out[0]
+    assert out[0]["ids"]["doi"] == "10.48550/arxiv.2001.00001"  # first seen stays the public one
+
+
+@pytest.mark.parametrize("raw,want", [
+    ("https://europepmc.org/article/PMC/PMC8371605", "pmcid:PMC8371605"),
+    ("https://europepmc.org/article/MED/34515826", "pmid:34515826"),
+    ("https://europepmc.org/abstract/MED/34515826", "pmid:34515826"),
+])
+def test_r2_europe_pmc_routes(raw, want):
+    assert P.normalize_id(raw) == want
+
+
+def test_r2_no_terminal_controls_anywhere_on_stdout(env):
+    calls, state, _ = env
+    bad = "\x1b]52;c;ZXZpbA==\x07"
+    state["scholar"] = lambda payload, page: R(200, {"organic": [
+        {"title": "T" + bad, "link": "https://e.org/x" + bad, "pdfUrl": "https://arxiv.org/pdf/1" + bad,
+         "publicationInfo": "V" + bad, "snippet": "s" + bad}], "gw": {"gwType": "scholar", "gwCreditsUsed": 1}})
+    state["index"] = lambda url, params: R(200, {"success": True, "results": [
+        {"primaryId": "pmid:" + bad, "ids": {}, "title": "I" + bad, "abstract": "a" + bad}]})
+    res = run("q")
+    assert res.exit_code == 0, res.output
+    assert "\x1b" not in res.stdout and "\x07" not in res.stdout
+
+
+def test_r2_pdf_notes_on_stderr(env):
+    calls, state, _ = env
+    state["index"] = lambda url, params: (R(200, {"title": "Closed", "ids": {}, "open_access": {"oa_status": "closed"},
+                                                  "locations": []}) if "openalex" in url else R(404, {}))
+    res = run("pdf", "doi:10.1016/j.mejo.2018.01.001", "--no-scholar")
+    assert "OpenAlex: closed" in res.stderr and "OpenAlex" not in res.stdout
+    assert "No legal free copy found" in res.stdout

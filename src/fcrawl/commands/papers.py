@@ -95,7 +95,14 @@ def ids_from_url(url: Optional[str]) -> dict[str, str]:
         m = _ARXIV_PATH.match(path)
         if m:
             ids["arxiv"] = m.group(1)
-    if host in ("pmc.ncbi.nlm.nih.gov", "www.ncbi.nlm.nih.gov", "ncbi.nlm.nih.gov", "europepmc.org"):
+    if host in ("europepmc.org", "www.europepmc.org"):
+        m = re.match(r"^/(?:abstract|article)/(PMC|MED)/(PMC\d+|\d+)/?", path, re.I)
+        if m and m.group(1).upper() == "PMC":
+            v = m.group(2).upper()
+            ids["pmcid"] = v if v.startswith("PMC") else "PMC" + v
+        elif m and m.group(2).isdigit() and len(m.group(2)) <= 9:
+            ids["pmid"] = m.group(2)
+    if host in ("pmc.ncbi.nlm.nih.gov", "www.ncbi.nlm.nih.gov", "ncbi.nlm.nih.gov"):
         m = _PMC_PATH.match(path)
         if m:
             v = m.group(1).upper()
@@ -213,6 +220,12 @@ def title_norm(title: Any) -> str:
 def clean(text: Any) -> str:
     """API text for the terminal: no control characters (escape sequences), newlines kept."""
     return _CONTROL.sub("", text) if isinstance(text, str) else ""
+
+
+def out(text: str = "") -> None:
+    """Every human-readable stdout line goes through here: API strings end up in ids,
+    links and hints too, and none of them may carry terminal escape sequences."""
+    print(clean(text))
 
 
 def one_line(text: Any) -> str:
@@ -435,7 +448,10 @@ def from_index(it: dict) -> dict:
 
 
 def _id_keys(p: dict) -> set[str]:
-    return {f"{k}:{str(v).lower()}" for k, v in p["ids"].items() if v}
+    """Every id this record was ever known by (a merged record keeps the aliases its
+    parts brought, e.g. a preprint DOI and the publication DOI), for matching only."""
+    keys = {f"{k}:{str(v).lower()}" for k, v in p["ids"].items() if v}
+    return keys | set(p.get("_aliases") or ())
 
 
 def _same_title(a: dict, b: dict) -> bool:
@@ -451,6 +467,7 @@ def _same_title(a: dict, b: dict) -> bool:
 
 
 def _absorb(into: dict, other: dict) -> None:
+    into["_aliases"] = sorted(_id_keys(into) | _id_keys(other))
     for s in other["sources"]:
         if s not in into["sources"]:
             into["sources"].append(s)
@@ -470,29 +487,30 @@ def merge(*lists: list[dict]) -> list[dict]:
     fold duplicates (same DOI / arXiv / PubMed id, or same title across engines) into
     the first occurrence. A record that links two earlier ones (a DOI one and an arXiv
     one) folds all three together."""
-    out: list[dict] = []
+    merged: list[dict] = []
     for rank in range(max((len(x) for x in lists), default=0)):
         for lst in lists:
             if rank >= len(lst):
                 continue
             p = lst[rank]
             keys = _id_keys(p)
-            hits = [o for o in out if keys & _id_keys(o)]
+            hits = [o for o in merged if keys & _id_keys(o)]
             if not hits:
-                hits = [o for o in out if _same_title(o, p)][:1]
+                hits = [o for o in merged if _same_title(o, p)][:1]
             if not hits:
-                out.append(p)
+                merged.append(p)
                 continue
             first = hits[0]
             _absorb(first, p)
             for other in hits[1:]:
                 _absorb(first, other)
-                out.remove(other)
-    for p in out:
+                merged.remove(other)
+    for p in merged:
+        p.pop("_aliases", None)
         p.setdefault("id", None)
         if not p["id"]:
             p["id"] = preferred_id(p["ids"])
-    return out
+    return merged
 
 
 def sort_papers(papers: list[dict], how: str) -> list[dict]:
@@ -507,7 +525,7 @@ def sort_papers(papers: list[dict], how: str) -> list[dict]:
 
 
 def print_paper(n: int, p: dict, abstracts: bool) -> None:
-    print(f"[{n}] {one_line(p['title']) or '(no title)'}")
+    out(f"[{n}] {one_line(p['title']) or '(no title)'}")
     facts = []
     if p.get("year"):
         facts.append(str(p["year"]))
@@ -516,17 +534,17 @@ def print_paper(n: int, p: dict, abstracts: bool) -> None:
     facts.append("+".join(p["sources"]))
     if p.get("id"):
         facts.append(p["id"])
-    print("    " + " · ".join(facts))
+    out("    " + " · ".join(facts))
     if p.get("venue"):
-        print(f"    {one_line(p['venue'])}")
+        out(f"    {one_line(p['venue'])}")
     if p["links"].get("page"):
-        print(f"    {one_line(p['links']['page'])}")
+        out(f"    {one_line(p['links']['page'])}")
     if p["links"].get("pdf"):
-        print(f"    pdf: {one_line(p['links']['pdf'])}")
+        out(f"    pdf: {one_line(p['links']['pdf'])}")
     text = p.get("abstract") or p.get("snippet")
     if text:
         text = one_line(text)
-        print("    " + (text if abstracts else shorten(text)))
+        out("    " + (text if abstracts else shorten(text)))
 
 
 def print_hints(papers: list[dict]) -> None:
@@ -543,9 +561,9 @@ def print_hints(papers: list[dict]) -> None:
     if doi:
         lines.append(f"free copy?       fcrawl papers pdf {doi}")
     if lines:
-        print("---")
+        out("---")
         for line in lines:
-            print(line)
+            out(one_line(line))
 
 
 def emit_json(data: dict, output: Optional[str]) -> None:
@@ -677,6 +695,9 @@ def search_cmd(query: str, engine: str, limit: int, since: Optional[str], until:
         if not msg.startswith("skipped") or engine != "all":
             console.print(f"[yellow]{name}: {escape(msg)}[/yellow]", highlight=False)
     if not raw:
+        if scholar_credits:
+            # paid pages before the failure: still say what they cost
+            console.print(f"[dim]{credits_note(scholar_credits, gw_cached)}[/dim]", highlight=False)
         console.print("[red]No engine answered[/red]")
         raise click.Abort()
 
@@ -699,7 +720,7 @@ def search_cmd(query: str, engine: str, limit: int, since: Optional[str], until:
     console.print(f"[green]Found {len(found)} papers[/green] [dim]({' + '.join(raw)})[/dim]", highlight=False)
     for n, p in enumerate(found, start=1):
         print_paper(n, p, abstracts)
-        print()
+        out()
     print_hints(found)
 
 
@@ -746,43 +767,43 @@ def show_cmd(paper_id: str, json_output: bool, no_cache: bool):
 
     if source == "openalex":
         ids = paper["ids"]
-        out = {"id": pid, "source": "openalex", **paper, "links": id_links(ids)}
+        info = {"id": pid, "source": "openalex", **paper, "links": id_links(ids)}
     else:
         ids = _ids_of(paper)
-        out = {"id": pid, "source": "index", "title": one_line(paper.get("title")),
+        info = {"id": pid, "source": "index", "title": one_line(paper.get("title")),
                "authors": one_line(paper.get("authors")) or None,
                "categories": paper.get("categories") if isinstance(paper.get("categories"), list) else [],
                "created": paper.get("createdDate"), "updated": paper.get("updateDate"),
                "ids": ids, "paperId": paper.get("paperId"), "abstract": (paper.get("abstract") or "").strip(),
                "links": id_links(ids)}
     if json_output:
-        emit_json(out, None)
+        emit_json(info, None)
         return
-    print(one_line(out["title"]) or "(no title)")
-    if out.get("authors"):
-        print(f"authors: {one_line(out['authors'])}")
-    facts = [f"{k}: {out[k]}" for k in ("year", "venue", "citedBy", "created", "updated") if out.get(k)]
-    if out.get("categories"):
-        facts.append("categories: " + ", ".join(map(str, out["categories"])))
-    if out.get("oaStatus"):
-        facts.append(f"open access: {out['oaStatus']}")
+    out(one_line(info["title"]) or "(no title)")
+    if info.get("authors"):
+        out(f"authors: {one_line(info['authors'])}")
+    facts = [f"{k}: {info[k]}" for k in ("year", "venue", "citedBy", "created", "updated") if info.get(k)]
+    if info.get("categories"):
+        facts.append("categories: " + ", ".join(map(str, info["categories"])))
+    if info.get("oaStatus"):
+        facts.append(f"open access: {info['oaStatus']}")
     if facts:
-        print(one_line(" · ".join(facts)))
-    print("ids: " + " · ".join(f"{k}:{v}" for k, v in ids.items()) + f"  (via {source})")
-    for k, v in out["links"].items():
-        if k == "doi" and v == out["links"].get("page"):
+        out(one_line(" · ".join(facts)))
+    out("ids: " + " · ".join(f"{k}:{v}" for k, v in ids.items()) + f"  (via {source})")
+    for k, v in info["links"].items():
+        if k == "doi" and v == info["links"].get("page"):
             continue
-        print(f"{k}: {v}")
-    print()
-    print(clean(out.get("abstract")) or "(no abstract)")
-    print("---")
+        out(f"{k}: {v}")
+    out()
+    out(clean(info.get("abstract")) or "(no abstract)")
+    out("---")
     if source == "index":
-        print(f"ask it:   fcrawl papers read {pid} -q \"your question\"")
-        print(f"related:  fcrawl papers related {pid} --mode citers")
-    if "pdf" in out["links"]:
-        print(f"read PDF: fcrawl scrape {out['links']['pdf']} --save-temp")
+        out(f"ask it:   fcrawl papers read {pid} -q \"your question\"")
+        out(f"related:  fcrawl papers related {pid} --mode citers")
+    if "pdf" in info["links"]:
+        out(f"read PDF: fcrawl scrape {info['links']['pdf']} --save-temp")
     elif ids.get("doi"):
-        print(f"free copy? fcrawl papers pdf doi:{ids['doi']}")
+        out(f"free copy? fcrawl papers pdf doi:{ids['doi']}")
 
 
 @papers.command("read")
@@ -812,18 +833,18 @@ def read_cmd(paper_id: str, question: str, passages: int, json_output: bool, no_
     if json_output:
         emit_json({"id": pid, "title": paper.get("title"), "question": question, "passages": found}, None)
         return
-    print(f"{one_line(paper.get('title')) or pid}  ({pid})")
-    print(f"Q: {question}")
+    out(f"{one_line(paper.get('title')) or pid}  ({pid})")
+    out(f"Q: {question}")
     if not found:
-        print()
-        print("No full-text passages for this paper (the index has full text mainly for arXiv papers).")
-        print(f"Abstract: fcrawl papers show {pid}   ·   PDF: fcrawl papers pdf {pid}")
+        out()
+        out("No full-text passages for this paper (the index has full text mainly for arXiv papers).")
+        out(f"Abstract: fcrawl papers show {pid}   ·   PDF: fcrawl papers pdf {pid}")
         return
     for n, p in enumerate(found, start=1):
         score = p.get("score")
-        print()
-        print(f"[{n}]" + (f" score {score:.3f}" if isinstance(score, (int, float)) else ""))
-        print(clean(p["text"]).strip())
+        out()
+        out(f"[{n}]" + (f" score {score:.3f}" if isinstance(score, (int, float)) else ""))
+        out(clean(p["text"]).strip())
 
 
 @papers.command("related")
@@ -864,7 +885,7 @@ def related_cmd(paper_id: str, mode: str, intent: Optional[str], limit: int, abs
                   highlight=False)
     for n, p in enumerate(found, start=1):
         print_paper(n, p, abstracts)
-        print()
+        out()
     print_hints(found)
 
 
@@ -981,7 +1002,7 @@ def openalex_work(pid: str, no_cache: bool) -> dict:
                                   "sourceType": s.get("type") if isinstance(s.get("type"), str) else None,
                                   "version": loc.get("version") if isinstance(loc.get("version"), str) else None,
                                   "license": loc.get("license") if isinstance(loc.get("license"), str) else None})
-    out = {
+    work = {
         "title": one_line(w.get("title")),
         "year": w.get("publication_year") if type(w.get("publication_year")) is int else None,
         "venue": venue,
@@ -991,8 +1012,8 @@ def openalex_work(pid: str, no_cache: bool) -> dict:
         "abstract": _reconstruct_abstract(w.get("abstract_inverted_index")),
         "locations": locations,
     }
-    write_cache(CACHE_BUCKET, key, out)
-    return out
+    write_cache(CACHE_BUCKET, key, work)
+    return work
 
 
 def s2_open_pdf(pid: str) -> tuple[Optional[str], str]:
@@ -1117,22 +1138,22 @@ def pdf_cmd(paper_id: str, no_scholar: bool, json_output: bool, no_cache: bool):
     head = title or pid
     if work.get("year"):
         head += f" ({work['year']})"
-    print(f"{one_line(head)} · {pid}")
+    out(f"{one_line(head)} · {pid}")
     if notes:
-        print(one_line(" · ".join(notes)))
+        console.print(f"[dim]{escape(one_line(' · '.join(notes)))}[/dim]", highlight=False)
     if cands:
-        print("Free copies (best first):")
+        out("Free copies (best first):")
         for c in cands:
             extra = ", ".join(x for x in (c.get("version"), c.get("license")) if x)
             flag = "  ⚠ author upload, copyright unclear" if c["kind"] == "social-upload" else ""
-            print(f"  [{c['kind']}] {one_line(c['url'])}" + (f"  ({extra}; via {c['via']})" if extra else f"  (via {c['via']})")
+            out(f"  [{c['kind']}] {one_line(c['url'])}" + (f"  ({extra}; via {c['via']})" if extra else f"  (via {c['via']})")
                   + flag)
         best = next((c for c in cands if c["kind"] != "social-upload"), cands[0])
-        print("---")
-        print(f"read it: fcrawl scrape {one_line(best['url'])} --save-temp")
+        out("---")
+        out(f"read it: fcrawl scrape {one_line(best['url'])} --save-temp")
         return
-    print("No legal free copy found.")
+    out("No legal free copy found.")
     if doi:
-        print(f"  Publisher page (usually abstract only): https://doi.org/{doi}")
-    print("  For the full text, download it with your own school or library access on your own computer.")
+        out(f"  Publisher page (usually abstract only): https://doi.org/{doi}")
+    out("  For the full text, download it with your own school or library access on your own computer.")
 
