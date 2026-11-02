@@ -587,3 +587,26 @@ def test_r2_pdf_notes_on_stderr(env):
     res = run("pdf", "doi:10.1016/j.mejo.2018.01.001", "--no-scholar")
     assert "OpenAlex: closed" in res.stderr and "OpenAlex" not in res.stdout
     assert "No legal free copy found" in res.stdout
+
+
+def test_post_ship_social_upload_only_gets_no_scrape_hint(env):
+    calls, state, _ = env
+    state["index"] = lambda url, params: (R(200, {"title": "A 10-bit SAR ADC paper", "ids": {}, "open_access": {},
+                                                  "locations": []}) if "openalex" in url else R(429, {}))
+    state["scholar"] = lambda payload, page: R(200, {"organic": [
+        {"title": "A 10-bit SAR ADC paper", "link": "https://x", "pdfUrl": "https://www.academia.edu/f.pdf"}],
+        "gw": {"gwType": "scholar", "gwCreditsUsed": 1}})
+    res = run("pdf", "doi:10.1109/jssc.2010.2042254")
+    assert "[social-upload] https://www.academia.edu/f.pdf" in res.stdout
+    assert "read it:" not in res.stdout and "ask the user" in res.stdout
+
+
+def test_post_ship_listing_hint_skips_social_uploads():
+    import io
+    from contextlib import redirect_stdout
+    papers = [P.from_scholar({"title": "A", "link": "https://x", "pdfUrl": "https://www.academia.edu/a.pdf"}),
+              P.from_scholar({"title": "B", "link": "https://y", "pdfUrl": "https://www.mdpi.com/b.pdf"})]
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        P.print_hints(P.merge(papers))
+    assert "fcrawl scrape https://www.mdpi.com/b.pdf" in buf.getvalue() and "academia" not in buf.getvalue()

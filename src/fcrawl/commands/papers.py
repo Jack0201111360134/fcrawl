@@ -550,7 +550,9 @@ def print_paper(n: int, p: dict, abstracts: bool) -> None:
 def print_hints(papers: list[dict]) -> None:
     """What an agent can do next, with real ids from this listing."""
     lines = []
-    pdf = next((p["links"]["pdf"] for p in papers if p["links"].get("pdf")), None)
+    # never suggest scraping a ResearchGate/Academia upload: copyright unclear
+    pdf = next((p["links"]["pdf"] for p in papers
+                if p["links"].get("pdf") and host_kind(p["links"]["pdf"]) != "social-upload"), None)
     if pdf:
         lines.append(f"read a PDF:      fcrawl scrape {pdf} --save-temp")
     indexed = next((p["id"] for p in papers if "index" in p["sources"] and p.get("id")), None)
@@ -1148,9 +1150,15 @@ def pdf_cmd(paper_id: str, no_scholar: bool, json_output: bool, no_cache: bool):
             flag = "  ⚠ author upload, copyright unclear" if c["kind"] == "social-upload" else ""
             out(f"  [{c['kind']}] {one_line(c['url'])}" + (f"  ({extra}; via {c['via']})" if extra else f"  (via {c['via']})")
                   + flag)
-        best = next((c for c in cands if c["kind"] != "social-upload"), cands[0])
+        best = next((c for c in cands if c["kind"] != "social-upload"), None)
         out("---")
-        out(f"read it: fcrawl scrape {one_line(best['url'])} --save-temp")
+        if best:
+            out(f"read it: fcrawl scrape {one_line(best['url'])} --save-temp")
+        else:
+            # only ResearchGate/Academia uploads: not a confirmed legal copy, so no
+            # ready-made scrape line; the user decides
+            out("Only an author upload with unclear copyright was found; ask the user before using it,")
+            out("or get the paper through their own school or library access.")
         return
     out("No legal free copy found.")
     if doi:
