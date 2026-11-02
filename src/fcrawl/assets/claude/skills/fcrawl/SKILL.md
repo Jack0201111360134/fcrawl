@@ -1,6 +1,6 @@
 ---
 name: fcrawl
-description: How to do ANY web task on this machine — web search, reading a page or API docs, YouTube transcripts, Reddit, X/Twitter, Dcard — with the `fcrawl` CLI. Load this before touching the web; built-in WebSearch/WebFetch are blocked by a hook until this skill has been read. Covers the hard rules (search results stay in Bash output, scrape with --save-temp, never --no-links on docs), every subcommand, and how to navigate API docs (llms.txt → .md pages).
+description: How to do ANY web task on this machine — web search, reading a page or API docs, YouTube transcripts, Reddit, X/Twitter, Dcard, academic papers (Google Scholar + arXiv/PubMed) — with the `fcrawl` CLI. Load this before touching the web; built-in WebSearch/WebFetch are blocked by a hook until this skill has been read. Covers the hard rules (search results stay in Bash output, scrape with --save-temp, never --no-links on docs), every subcommand, and how to navigate API docs (llms.txt → .md pages).
 ---
 
 # fcrawl — all web access goes through this CLI
