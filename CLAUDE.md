@@ -9,7 +9,8 @@ fcrawl is a Python CLI (Click + Rich, managed with uv) that gives AI coding agen
 
 ## Branch, install, release
 
-- Users install from GitHub, branch **`feat/gateway-mode`**: `uv tool install --force "git+https://github.com/Yan-Yu-Lin/fcrawl.git@feat/gateway-mode"`, then `fcrawl setup claude-code`. Whatever is pushed there reaches Arthur's family on their next upgrade. Work on a side branch, test, then fast-forward.
+- Users install from GitHub **`main`**: `uv tool install --force "git+https://github.com/Yan-Yu-Lin/fcrawl.git"`, then `fcrawl setup claude-code`. Whatever is pushed to `main` reaches Arthur's family on their next upgrade. Work on a side branch, test, then fast-forward `main`.
+- `feat/gateway-mode` is kept as a mirror of `main` (older installs point at it): when `main` moves, push the same commit there too (`git push origin main:feat/gateway-mode`).
 - Arthur's Mac uses the same git install (not editable). To try a change for real: push + reinstall, or `uv run fcrawl …` inside the repo.
 - The version lives only in `pyproject.toml` (`fcrawl --version` reads the package metadata).
 

@@ -150,7 +150,7 @@ Installs `skills/fcrawl/SKILL.md` and `hooks/fcrawl_gate.py` into `~/.claude` (o
 Local speech-to-text with SenseVoice (Alibaba FunASR). Needs the optional `asr` extra, which pulls in PyTorch, FunASR, pydub and OpenCC (several GB):
 
 ```bash
-uv tool install --force "fcrawl[asr] @ git+https://github.com/Yan-Yu-Lin/fcrawl.git@feat/gateway-mode"
+uv tool install --force "fcrawl[asr] @ git+https://github.com/Yan-Yu-Lin/fcrawl.git"
 fcrawl transcribe recording.mp3 [-m sensevoice|paraformer|fun-asr-nano] [-f txt|srt|vtt|json] [--simplified]
 ```
 

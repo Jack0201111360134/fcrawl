@@ -11,7 +11,7 @@ You need [uv](https://docs.astral.sh/uv/getting-started/installation/) and a gat
 **1. Install**
 
 ```bash
-uv tool install "git+https://github.com/Yan-Yu-Lin/fcrawl.git@feat/gateway-mode"
+uv tool install "git+https://github.com/Yan-Yu-Lin/fcrawl.git"
 ```
 
 **2. Configure.** Create `~/.fcrawlrc` (on Windows: `C:\Users\<you>\.fcrawlrc`) with:
@@ -31,7 +31,7 @@ Keep the token private (`chmod 600 ~/.fcrawlrc`). fcrawl refuses to send it over
 fcrawl setup claude-code
 ```
 
-**Upgrade later:** `uv tool install --force "git+https://github.com/Yan-Yu-Lin/fcrawl.git@feat/gateway-mode" && fcrawl setup claude-code`.
+**Upgrade later:** `uv tool install --force "git+https://github.com/Yan-Yu-Lin/fcrawl.git" && fcrawl setup claude-code`.
 `fcrawl setup claude-code --doctor` checks the installation.
 
 ## What you can do
