@@ -42,7 +42,7 @@ Dependencies worth knowing: `firecrawl-py` and `twscrape` are pinned to Arthur's
 ## Tests and lint
 
 ```bash
-uv run --with pytest python -m pytest -q     # 248 tests, all offline
+uv run --with pytest python -m pytest -q     # 253 tests, all offline
 uvx ruff check src tests                     # config in pyproject: pyflakes + syntax only
 ```
 

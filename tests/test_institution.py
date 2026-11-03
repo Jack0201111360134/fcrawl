@@ -193,12 +193,16 @@ def test_cookies_only_go_to_the_proxy(env):
         I.Cookie("JSESSIONID", "b", "search.lib.ntut.edu.tw"),
         I.Cookie("leak", "c", ".ieee.org"),  # a cookie for the publisher itself: never sent anywhere
         I.Cookie("old", "d", ".search.lib.ntut.edu.tw", expires=int(time.time()) - 10),
+        I.Cookie("idp_session", "e", ".lib.ntut.edu.tw"),  # the proxy's rewrite of Domain=.springer.com
     ])
-    assert s.for_host(NTUT, "search.lib.ntut.edu.tw") == {"HYSID": "a", "JSESSIONID": "b"}
-    assert s.for_host(NTUT, "ieeexplore-ieee-org.search.lib.ntut.edu.tw") == {"HYSID": "a"}  # JSESSIONID: host-only
+    assert s.for_host(NTUT, "search.lib.ntut.edu.tw") == {"HYSID": "a", "JSESSIONID": "b", "idp_session": "e"}
+    assert s.for_host(NTUT, "ieeexplore-ieee-org.search.lib.ntut.edu.tw") == {"HYSID": "a", "idp_session": "e"}
     assert s.for_host(NTUT, "ieeexplore.ieee.org") == {}
     assert s.for_host(NTUT, "ieee.org") == {}
+    assert s.for_host(NTUT, "lib.ntut.edu.tw") == {}  # a parent-domain cookie still only goes to the proxy
     assert s.for_host(NTUT, "search.lib.ntut.edu.tw.evil.com") == {}
+    assert NTUT.cookie_domain_ok(".lib.ntut.edu.tw") and NTUT.cookie_domain_ok("search.lib.ntut.edu.tw")
+    assert not NTUT.cookie_domain_ok(".ieee.org") and not NTUT.cookie_domain_ok("tw") and not NTUT.cookie_domain_ok("")
 
 
 def test_store_round_trip_is_private(env):
@@ -271,11 +275,16 @@ def test_follow_attaches_cookies_per_hop_and_detects_login(env):
     s = store_with()
     doc = "https://ieeexplore-ieee-org.search.lib.ntut.edu.tw/document/1"
     login = "https://search.lib.ntut.edu.tw/login?url=https%3A%2F%2Fieeexplore.ieee.org%2Fdocument%2F1"
+    outside = "https://ieeexplore-ieee-org.search.lib.ntut.edu.tw/outside"
+    # the proxy sends us out to the publisher: we go back in once; when it bounces the same
+    # host again, the library does not proxy it and we continue outside, without cookies
     web.routes[doc] = R(302, headers={"Location": "https://ieeexplore.ieee.org/outside"})
+    web.routes[outside] = R(302, headers={"Location": "https://ieeexplore.ieee.org/outside"})
     web.routes["https://ieeexplore.ieee.org/outside"] = R(200, b"<html>free</html>")
     resp = I.follow(NTUT, s, doc, 10)
     assert resp.status_code == 200
-    assert web.hosts() == [("ieeexplore-ieee-org.search.lib.ntut.edu.tw", ["HYSID"]), ("ieeexplore.ieee.org", [])]
+    assert web.hosts() == [("ieeexplore-ieee-org.search.lib.ntut.edu.tw", ["HYSID"]),
+                           ("ieeexplore-ieee-org.search.lib.ntut.edu.tw", ["HYSID"]), ("ieeexplore.ieee.org", [])]
 
     # the login endpoint answers with a page (404 here, its form in real life): session gone
     web.calls.clear()
@@ -353,6 +362,52 @@ def test_pdf_candidates(landing, html, want):
     assert I.pdf_candidates(landing, html) == want
 
 
+SD_INTERSTITIAL = ('<html><head><meta http-equiv="refresh" content="0; url=/science/article/pii/S1?ref=cra_js_challenge" />'
+                   '</head><body>Preparing your download<script>var a=1; location="/science/article/pii/S1/pdfft?'
+                   'crasolve=1&r=abc123&ts=1793678828793&rtype=";</script></body></html>')
+
+
+def test_interstitial_targets():
+    page = "https://www.sciencedirect.com/science/article/pii/S1/pdfft?isDTMRedir=true&download=true"
+    assert I.interstitial_targets(page, SD_INTERSTITIAL) == [
+        "https://www.sciencedirect.com/science/article/pii/S1/pdfft?crasolve=1&r=abc123&ts=1793678828793&rtype="]
+    # other hosts, the page itself and non-PDF targets are ignored
+    html = '<script>window.location.href = "https://evil.example/x.pdf"; location="/same/page.pdf"</script>'
+    assert I.interstitial_targets("https://pub.org/same/page.pdf", html) == []
+    assert I.interstitial_targets("https://pub.org/a", '<script>location="/b.html"</script>') == []
+    assert I.interstitial_targets("https://pub.org/a", "x" * 300_000) == []
+
+
+def test_fetch_sciencedirect_download_page(env):
+    """ScienceDirect: article page → pdfft → a 'preparing your download' page whose script
+    carries the one-time link → the PDF. The script link is followed, once."""
+    web, tmp = env
+    s = store_with()
+    base = "https://www-sciencedirect-com.search.lib.ntut.edu.tw/science/article/pii/S1"
+    web.routes[base] = R(200, "<html>abstract</html>")
+    web.routes[base + "/pdfft?isDTMRedir=true&download=true"] = R(200, SD_INTERSTITIAL)
+    web.routes[base + "/pdfft?crasolve=1&r=abc123&ts=1793678828793&rtype="] = R(200, PDF, {"Content-Type": "application/pdf"})
+    got = I.fetch_pdf(NTUT, s, "https://www.sciencedirect.com/science/article/pii/S1", tmp / "sd.pdf")
+    assert got.size == len(PDF) and "crasolve=1" in got.pdf_url
+    assert [u for u, _ in web.calls] == [base, base + "/pdfft?isDTMRedir=true&download=true",
+                                        base + "/pdfft?crasolve=1&r=abc123&ts=1793678828793&rtype="]
+    assert I.Usage.load("ntut").publishers == {"sciencedirect.com": 1}
+
+
+def test_fetch_sciencedirect_js_challenge_is_named(env):
+    """The real ScienceDirect keeps answering with its JavaScript challenge (the one-time
+    link is computed in the browser). fetch says so instead of a generic 'no PDF'."""
+    web, tmp = env
+    s = store_with()
+    base = "https://www-sciencedirect-com.search.lib.ntut.edu.tw/science/article/pii/S1"
+    web.routes[base + "/pdfft"] = lambda: R(200, SD_INTERSTITIAL)  # every pdfft variant: the challenge again
+    web.routes[base] = R(200, "<html>abstract</html>")  # after the prefix route: Web matches in insertion order
+    with pytest.raises(I.NeedsBrowser, match="JavaScript challenge") as exc:
+        I.fetch_pdf(NTUT, s, "https://www.sciencedirect.com/science/article/pii/S1", tmp / "sd.pdf")
+    assert "www-sciencedirect-com.search.lib.ntut.edu.tw/science/article/pii/S1" in str(exc.value)
+    assert len(web.calls) <= 2 + I.MAX_INTERSTITIALS + 1
+
+
 def test_publisher_of():
     assert I.publisher_of("https://ieeexplore.ieee.org/document/1") == "ieee.org"
     assert I.publisher_of("https://www.sciencedirect.com/x") == "sciencedirect.com"
@@ -365,22 +420,70 @@ def test_publisher_of():
 
 
 def test_fetch_landing_then_pdf(env):
+    """A DOI link is resolved at doi.org itself (public, no cookies), then the publisher
+    page goes through the proxy; the per-publisher count names the publisher."""
     web, tmp = env
     s = store_with()
-    doi = "https://doi-org.search.lib.ntut.edu.tw/10.1007/s1"
     article = "https://link-springer-com.search.lib.ntut.edu.tw/article/10.1007/s1"
     pdf = "https://link-springer-com.search.lib.ntut.edu.tw/content/pdf/10.1007/s1.pdf"
-    web.routes[doi] = R(302, headers={"Location": article})
+    web.routes["https://doi.org/10.1007/s1"] = R(302, headers={"Location": "http://link.springer.com/10.1007/s1"})
+    web.routes["https://link-springer-com.search.lib.ntut.edu.tw/10.1007/s1"] = R(301, headers={"Location": article})
     web.routes[article] = R(200, LANDING)
     web.routes[pdf] = R(200, PDF, {"Content-Type": "application/pdf"})
     out = tmp / "out" / "p.pdf"
-    got = I.fetch_pdf(NTUT, s, "https://doi.org/10.1007/s1", out)
+    notes: list[str] = []
+    got = I.fetch_pdf(NTUT, s, "https://doi.org/10.1007/s1", out, note=notes.append)
     assert got.path == out and out.read_bytes() == PDF and got.size == len(PDF)
-    assert got.pdf_url == pdf
-    assert all(c == {"HYSID": "s3cret-value"} for _, c in web.calls)
+    assert got.pdf_url == pdf and got.url == "https://doi.org/10.1007/s1"
+    assert web.hosts() == [("doi.org", []),  # the public resolver, no cookies
+                           ("link-springer-com.search.lib.ntut.edu.tw", ["HYSID"]),
+                           ("link-springer-com.search.lib.ntut.edu.tw", ["HYSID"]),
+                           ("link-springer-com.search.lib.ntut.edu.tw", ["HYSID"])]
+    assert notes and notes[0].startswith("DOI resolves to http://link.springer.com/10.1007/s1")
     u = I.Usage.load("ntut")
-    assert u.total == 1 and u.publishers == {"doi.org": 1}
+    assert u.total == 1 and u.publishers == {"springer.com": 1}
     assert not s.dirty and [c.name for c in I.CookieStore.load("ntut").cookies] == ["HYSID"]
+
+
+def test_fetch_springer_idp_handshake(env):
+    """Springer bounces every article request to idp.springer.com, which sets its cookies
+    with Domain=.springer.com; the proxy rewrites that to .lib.ntut.edu.tw, a parent of its
+    own host. Those cookies must be kept and sent back, or the two hosts loop forever."""
+    web, tmp = env
+    s = store_with()
+    article = "https://link-springer-com.search.lib.ntut.edu.tw/article/10.1007/s1"
+    idp = "https://idp-springer-com.search.lib.ntut.edu.tw/authorize?response_type=cookie"
+    pdf = "https://link-springer-com.search.lib.ntut.edu.tw/content/pdf/10.1007/s1.pdf"
+    seen = {"idp": 0}
+
+    def article_route():
+        if "idp_session" in web.calls[-1][1]:
+            return R(200, LANDING)
+        return R(303, headers={"Location": idp}, cookies=[("trackid", "t", ".lib.ntut.edu.tw")])
+
+    def idp_route():
+        seen["idp"] += 1
+        return R(302, headers={"Location": article}, cookies=[("idp_session", "sess", ".lib.ntut.edu.tw"),
+                                                                ("idp_marker", "m", ".lib.ntut.edu.tw")])
+
+    web.routes[article] = article_route
+    web.routes[idp] = idp_route
+    web.routes[pdf] = R(200, PDF, {"Content-Type": "application/pdf"})
+    got = I.fetch_pdf(NTUT, s, "https://link.springer.com/article/10.1007/s1", tmp / "t.pdf")
+    assert got.size == len(PDF) and seen["idp"] == 1
+    assert web.hosts()[-1] == ("link-springer-com.search.lib.ntut.edu.tw", ["HYSID", "idp_marker", "idp_session", "trackid"])
+    kept = {c.name: c.domain for c in I.CookieStore.load("ntut").cookies}
+    assert kept["idp_session"] == ".lib.ntut.edu.tw" and "HYSID" in kept
+
+
+def test_fetch_doi_that_does_not_resolve(env):
+    web, tmp = env
+    s = store_with()
+    web.routes["https://doi.org/10.1016/nope"] = R(404, b"DOI not found")
+    web.routes["https://doi-org.search.lib.ntut.edu.tw/10.1016/nope"] = R(404, b"nope")
+    with pytest.raises(I.InstitutionError, match="no PDF found"):
+        I.fetch_pdf(NTUT, s, "https://doi.org/10.1016/nope", tmp / "t.pdf")
+    assert I.Usage.load("ntut").publishers == {"doi.org": 1}  # counted all the same
 
 
 def test_fetch_ieee_direct_pdf(env):
@@ -549,8 +652,8 @@ def test_papers_fetch_cli(env):
     enable()
     store_with()
     stamp = "https://ieeexplore-ieee-org.search.lib.ntut.edu.tw/stampPDF/getPDF.jsp"
-    web.routes["https://doi-org.search.lib.ntut.edu.tw/10.1109/TPEL.2012.2223718"] = \
-        R(302, headers={"Location": "https://ieeexplore-ieee-org.search.lib.ntut.edu.tw/document/6329441"})
+    web.routes["https://doi.org/10.1109/TPEL.2012.2223718"] = \
+        R(302, headers={"Location": "https://ieeexplore.ieee.org/document/6329441"})
     web.routes["https://ieeexplore-ieee-org.search.lib.ntut.edu.tw/document/6329441"] = R(200, "<html>abs</html>")
     web.routes[stamp] = R(200, PDF, {"Content-Type": "application/pdf"})
     res = run("papers", "fetch", "https://doi.org/10.1109/TPEL.2012.2223718")
@@ -563,7 +666,7 @@ def test_papers_fetch_cli(env):
     assert res.exit_code == 0, res.output
     data = json.loads(res.stdout)
     assert data["ok"] and data["path"] == str(tmp / "mine.pdf") and data["provider"] == "institution:ntut"
-    assert I.Usage.load("ntut").total == 2
+    assert I.Usage.load("ntut").total == 2 and I.Usage.load("ntut").publishers == {"ieee.org": 2}
 
 
 def test_papers_fetch_errors_and_free_ids(env):

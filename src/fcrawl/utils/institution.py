@@ -68,6 +68,11 @@ class RateLimited(InstitutionError):
     pass
 
 
+class NeedsBrowser(InstitutionError):
+    """The publisher hands out its PDF only after a JavaScript challenge (ScienceDirect's
+    "preparing your download" page): no HTTP client gets past it, a browser does."""
+
+
 # --- presets ---------------------------------------------------------------------
 
 
@@ -102,6 +107,15 @@ class Preset:
     def under_proxy(self, host: str) -> bool:
         host = host.lower().rstrip(".")
         return host == self.proxy_host or host.endswith("." + self.proxy_host)
+
+    def cookie_domain_ok(self, domain: str) -> bool:
+        """A cookie domain worth keeping: the proxy host, a host under it, or a parent of it
+        (the proxy rewrites a publisher's Domain=.springer.com into a parent of its own
+        host, .lib.ntut.edu.tw for ntut). Sending is restricted separately, see for_host."""
+        d = domain.lower().lstrip(".").rstrip(".")
+        if not d or "." not in d:
+            return False
+        return self.under_proxy(d) or self.proxy_host.endswith("." + d)
 
     def login_page(self, landing: Optional[str] = None) -> str:
         return self.login_url.format(url=quote(landing or self.probe_url, safe=""))
@@ -309,7 +323,7 @@ class CookieStore:
 
 
 def _keep(preset: Preset, cookies: list[Cookie]) -> list[Cookie]:
-    kept = [c for c in cookies if preset.under_proxy(c.domain.lstrip(".")) and not c.expired()]
+    kept = [c for c in cookies if preset.cookie_domain_ok(c.domain) and not c.expired()]
     if not kept:
         raise NotLoggedIn(f"no cookies for {preset.proxy_host} found; log in at {preset.login_page()} first")
     return kept
@@ -464,6 +478,7 @@ def follow(preset: Preset, store: CookieStore, url: str, timeout: int, stream: b
     get = get or http_get
     current = url
     login_hops = 0
+    bounced: set[str] = set()  # publisher hosts the proxy sent us out to (it does not proxy them)
     for _ in range(MAX_REDIRECTS + 1):
         resp = get(current, store.for_host(preset, _host(current)), timeout, stream)
         resp.request_url = current  # type: ignore[attr-defined]
@@ -477,6 +492,17 @@ def follow(preset: Preset, store: CookieStore, url: str, timeout: int, stream: b
                     raise NotLoggedIn(_EXPIRED)
             elif at_login and not preset.under_proxy(_host(location)):
                 raise NotLoggedIn(_EXPIRED)  # the login endpoint handed us to the campus portal
+            elif not preset.under_proxy(_host(location)) and preset.style == "hostname":
+                # the proxy bounced us out: it does not rewrite this host (doi.org, say). Take
+                # the publisher URL it resolved to back in through the proxy, once per host;
+                # a second bounce for the same host means the library does not proxy it
+                host = _host(location)
+                if host not in bounced and location.startswith(("http://", "https://")):
+                    bounced.add(host)
+                    try:
+                        location = preset.rewrite(location)
+                    except InstitutionError:
+                        pass
             try:
                 resp.close()
             except Exception:
@@ -499,7 +525,7 @@ def _absorb_cookies(preset: Preset, store: CookieStore, resp: Any, host: str) ->
         if not isinstance(name, str) or not isinstance(value, str):
             continue
         domain = getattr(c, "domain", None) or host
-        if not preset.under_proxy(domain.lstrip(".")):
+        if not preset.cookie_domain_ok(domain):
             continue
         exp = getattr(c, "expires", None)
         new = Cookie(name, value, domain, getattr(c, "path", None) or "/", bool(getattr(c, "secure", True)),
@@ -563,6 +589,36 @@ def pdf_candidates(landing_url: str, html: str = "") -> list[str]:
     return out
 
 
+_JS_CHALLENGE_MARKS = ("cra_js_challenge", "Preparing your download", "crasolve=1")
+
+
+def _js_challenge(html: str) -> bool:
+    return any(mark in html for mark in _JS_CHALLENGE_MARKS)
+
+
+_JS_LOCATION = re.compile(r"""(?:window\.|document\.|top\.)?location(?:\.href)?\s*=\s*["']([^"'\s]{4,600})["']""", re.I)
+_META_REFRESH = re.compile(r"""http-equiv=["']?refresh["']?[^>]*?url=([^"'>\s]+)""", re.I)
+MAX_INTERSTITIALS = 3
+
+
+def interstitial_targets(page_url: str, html: str) -> list[str]:
+    """Where a 'preparing your download' page sends the browser next: JavaScript
+    `location = "…"` assignments and meta refreshes that point at a PDF on the same host.
+    ScienceDirect's pdfft answers with such a page (its JS challenge), whose real link
+    carries a one-time token. Only PDF-looking links are returned, best first."""
+    if len(html) > 200_000:
+        return []
+    host = _host(page_url)
+    out: list[str] = []
+    for m in list(_JS_LOCATION.finditer(html)) + list(_META_REFRESH.finditer(html)):
+        target = urljoin(page_url, m.group(1).replace("&amp;", "&"))
+        if _host(target) != host or target == page_url or target in out:
+            continue
+        if "pdf" in target.lower():
+            out.append(target)
+    return out
+
+
 def _is_pdf(resp: requests.Response, head: bytes) -> bool:
     ctype = (resp.headers.get("Content-Type") or "").lower()
     return head.startswith(b"%PDF") or ("application/pdf" in ctype and not head.startswith(b"<"))
@@ -580,6 +636,29 @@ def _read_body(chunks_iter: Any, limit: int = MAX_PDF_BYTES, already: int = 0) -
             raise InstitutionError(f"response larger than {limit // (1024 * 1024)} MB; refusing")
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+DOI_HOSTS = ("doi.org", "dx.doi.org")
+
+
+def resolve_doi(url: str, get: Optional[Callable[..., requests.Response]] = None) -> str:
+    """The publisher URL a doi.org link redirects to (doi.org is public: no proxy, no
+    cookies). The link itself when it does not resolve."""
+    get = get or http_get
+    current = url
+    for _ in range(5):
+        if _host(current) not in DOI_HOSTS:
+            return current
+        resp = get(current, {}, PROBE_TIMEOUT, False)
+        location = resp.headers.get("Location") if resp.status_code in (301, 302, 303, 307, 308) else None
+        try:
+            resp.close()
+        except Exception:
+            pass
+        if not location:
+            return url
+        current = urljoin(current, location)
+    return current
 
 
 @dataclass
@@ -600,7 +679,12 @@ def fetch_pdf(preset: Preset, store: CookieStore, url: str, out_path: Path, usag
         raise NotLoggedIn("no institution session on file; run: fcrawl auth login")
     get, clock, sleep = get or http_get, clock or time.time, sleep or time.sleep
     usage = usage or Usage.load(preset.id)
-    publisher = publisher_of(url)
+    target_url = url
+    if _host(url) in DOI_HOSTS:
+        target_url = resolve_doi(url, get)
+        if target_url != url:
+            note(f"DOI resolves to {target_url[:100]}")
+    publisher = publisher_of(target_url)
     now = clock()
     today = date.fromtimestamp(now).isoformat()
     wait = usage.check(publisher, now, today)
@@ -612,8 +696,10 @@ def fetch_pdf(preset: Preset, store: CookieStore, url: str, out_path: Path, usag
 
     hops: list[str] = []
     tried: set[str] = set()
-    queue = [url]
+    queue = [target_url]
     html_seen: Optional[tuple[str, str]] = None
+    interstitials = 0
+    challenged = False
     while queue:
         target = queue.pop(0)
         proxied = preset.rewrite(target)
@@ -645,18 +731,27 @@ def fetch_pdf(preset: Preset, store: CookieStore, url: str, out_path: Path, usag
             return Fetched(out_path, len(body), url, final, hops)
         body = (head + _read_body(it, 5 * 1024 * 1024, len(head))).decode("utf-8", "replace")
         resp.close()
+        challenged = challenged or _js_challenge(body)
+        # a download page that moves on by script (ScienceDirect's "preparing your download")
+        if interstitials < MAX_INTERSTITIALS:
+            page = _unproxy(preset, final) if preset.under_proxy(_host(final)) else final
+            nxt = [t for t in interstitial_targets(page, body) if preset.rewrite(t) not in tried]
+            if nxt:
+                interstitials += 1
+                queue = nxt[:1] + queue
         if html_seen is None:
             html_seen = (final, body)
-            # links inside a proxied page already point at the proxy; publisher patterns
-            # derive from the original URL and get rewritten on the next loop
-            for cand in pdf_candidates(target, body):
+            # where the redirects ended is the real landing page (a DOI link resolves to the
+            # publisher): its citation_pdf_url first, then the publisher's known pattern for
+            # that page, then the pattern for the URL as given
+            landing = _unproxy(preset, final) if preset.under_proxy(_host(final)) else final
+            for cand in pdf_candidates(landing, body) + pdf_candidates(target, ""):
                 if cand not in queue:
                     queue.append(cand)
-            if preset.style == "hostname" and preset.under_proxy(_host(final)):
-                for cand in pdf_candidates(_unproxy(preset, final), ""):
-                    if cand not in queue:
-                        queue.append(cand)
     where = html_seen[0][:80] if html_seen else url[:80]
+    if challenged:
+        raise NeedsBrowser(f"{publisher} serves its PDFs only after a JavaScript challenge, which fcrawl cannot run; "
+                           f"open the paper in your browser through the library instead: {preset.rewrite(target_url)}")
     raise InstitutionError(f"no PDF found behind {where}: the page has no citation_pdf_url and no known publisher "
                            "pattern matched, or the library has no subscription to it")
 
